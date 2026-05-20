@@ -255,7 +255,19 @@ export default function OnboardingPage() {
                 </div>
                 <div>
                   <label className="text-xs text-[#A1A1AA] mb-1.5 block">App URL</label>
-                  <input type="url" value={profile.appUrl} onChange={e => setProfile({...profile, appUrl: e.target.value})} placeholder="https://myapp.lovable.app" className="hatch-input" />
+                  <input
+                    type="text"
+                    value={profile.appUrl}
+                    onChange={e => setProfile({...profile, appUrl: e.target.value})}
+                    onBlur={e => {
+                      const v = e.target.value.trim()
+                      if (v && !v.startsWith("http://") && !v.startsWith("https://")) {
+                        setProfile(p => ({ ...p, appUrl: "https://" + v }))
+                      }
+                    }}
+                    placeholder="resoly.lovable.app"
+                    className="hatch-input"
+                  />
                 </div>
                 <div>
                   <label className="text-xs text-[#A1A1AA] mb-1.5 block">Built with</label>
