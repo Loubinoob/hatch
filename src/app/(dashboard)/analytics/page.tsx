@@ -3,10 +3,11 @@
 import { useEffect, useState, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { motion } from "framer-motion"
-import { Loader2, TrendingDown, CalendarDays } from "lucide-react"
+import { Loader2, TrendingDown, CalendarDays, BarChart2, ArrowRight } from "lucide-react"
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts"
 import { formatMoney, formatPercent } from "@/lib/utils"
 import { subDays, format } from "date-fns"
+import Link from "next/link"
 
 type Funnel = { label: string; count: number; color: string }
 
@@ -80,6 +81,7 @@ export default function AnalyticsPage() {
     setLoading(false)
   }
 
+  const isEmpty = !loading && funnel.every(f => f.count === 0) && totalRevenue === 0
   const max = Math.max(...funnel.map(f => f.count), 1)
   const totalRevenue = revenueByDay.reduce((s, d) => s + d.revenue, 0)
   const paywallShown = funnel[1]?.count ?? 0
@@ -138,57 +140,87 @@ export default function AnalyticsPage() {
           <h2 className="text-sm font-semibold text-white">Conversion funnel</h2>
           {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-[#52525B]" />}
         </div>
-        <div className="space-y-3">
-          {funnel.map((step, i) => {
-            const prev = i > 0 ? funnel[i - 1].count : step.count
-            const dropoff = prev > 0 ? (1 - step.count / prev) * 100 : 0
-            const pct = step.count / (prev || 1) * 100
-            return (
-              <div key={step.label}>
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium text-[#52525B] w-4">{i + 1}</span>
-                    <span className="text-sm text-white">{step.label}</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    {i > 0 && (
+
+        {isEmpty ? (
+          <div className="flex flex-col items-center justify-center py-10 text-center">
+            <div className="w-10 h-10 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-center mb-3">
+              <BarChart2 className="w-5 h-5 text-indigo-400" />
+            </div>
+            <p className="text-sm font-medium text-white mb-1">No data yet</p>
+            <p className="text-xs text-[#52525B] max-w-xs mb-4">
+              Install the Hatch SDK in your app and publish a paywall to start seeing funnel data here.
+            </p>
+            <div className="flex items-center gap-3">
+              <Link
+                href="/paywalls"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium rounded-lg transition-colors"
+              >
+                Go to paywalls
+                <ArrowRight className="w-3 h-3" />
+              </Link>
+              <Link
+                href="/settings/project-brief"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white/5 hover:bg-white/8 text-[#A1A1AA] hover:text-white text-xs font-medium rounded-lg border border-white/8 transition-colors"
+              >
+                Complete setup
+              </Link>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3">
+              {funnel.map((step, i) => {
+                const prev = i > 0 ? funnel[i - 1].count : step.count
+                const dropoff = prev > 0 ? (1 - step.count / prev) * 100 : 0
+                const pct = step.count / (prev || 1) * 100
+                return (
+                  <div key={step.label}>
+                    <div className="flex items-center justify-between mb-1.5">
                       <div className="flex items-center gap-2">
-                        {dropoff > 0 && (
-                          <span className="text-xs text-red-400 flex items-center gap-1">
-                            <TrendingDown className="w-3 h-3" />
-                            {formatPercent(dropoff)} drop
-                          </span>
-                        )}
-                        <span className="text-xs text-[#52525B]">
-                          {formatPercent(pct)} of prev
-                        </span>
+                        <span className="text-xs font-medium text-[#52525B] w-4">{i + 1}</span>
+                        <span className="text-sm text-white">{step.label}</span>
                       </div>
-                    )}
-                    <span className="font-mono text-sm text-white w-16 text-right">{step.count.toLocaleString()}</span>
+                      <div className="flex items-center gap-3">
+                        {i > 0 && (
+                          <div className="flex items-center gap-2">
+                            {dropoff > 0 && (
+                              <span className="text-xs text-red-400 flex items-center gap-1">
+                                <TrendingDown className="w-3 h-3" />
+                                {formatPercent(dropoff)} drop
+                              </span>
+                            )}
+                            <span className="text-xs text-[#52525B]">
+                              {formatPercent(pct)} of prev
+                            </span>
+                          </div>
+                        )}
+                        <span className="font-mono text-sm text-white w-16 text-right">{step.count.toLocaleString()}</span>
+                      </div>
+                    </div>
+                    <div className="h-2 bg-white/5 rounded-full overflow-hidden">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${(step.count / max) * 100}%` }}
+                        transition={{ delay: i * 0.05, duration: 0.5, ease: "easeOut" }}
+                        className="h-full rounded-full"
+                        style={{ background: step.color }}
+                      />
+                    </div>
                   </div>
-                </div>
-                <div className="h-2 bg-white/5 rounded-full overflow-hidden">
-                  <motion.div
-                    initial={{ width: 0 }}
-                    animate={{ width: `${(step.count / max) * 100}%` }}
-                    transition={{ delay: i * 0.05, duration: 0.5, ease: "easeOut" }}
-                    className="h-full rounded-full"
-                    style={{ background: step.color }}
-                  />
-                </div>
-              </div>
-            )
-          })}
-        </div>
-        <div className="mt-4 pt-4 border-t border-white/6 flex items-center justify-between">
-          <p className="text-sm text-[#71717A]">
-            Overall conversion (views → payments):{" "}
-            <span className="text-emerald-400 font-semibold">
-              {funnel[0]?.count > 0 ? formatPercent((funnel[funnel.length - 1]?.count / funnel[0].count) * 100) : "—"}
-            </span>
-          </p>
-          <p className="text-xs text-[#52525B]">Last {dateRange} days</p>
-        </div>
+                )
+              })}
+            </div>
+            <div className="mt-4 pt-4 border-t border-white/6 flex items-center justify-between">
+              <p className="text-sm text-[#71717A]">
+                Overall conversion (views → payments):{" "}
+                <span className="text-emerald-400 font-semibold">
+                  {funnel[0]?.count > 0 ? formatPercent((funnel[funnel.length - 1]?.count / funnel[0].count) * 100) : "—"}
+                </span>
+              </p>
+              <p className="text-xs text-[#52525B]">Last {dateRange} days</p>
+            </div>
+          </>
+        )}
       </motion.div>
 
       {/* Revenue chart */}

@@ -3,7 +3,7 @@
 import { useEffect, useState, use } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { motion } from "framer-motion"
-import { Loader2, Eye, Smartphone, Monitor, Tablet, Save, Zap, ChevronLeft, Sparkles, RefreshCw, Check, BookOpen } from "lucide-react"
+import { Loader2, Eye, Smartphone, Monitor, Tablet, Save, Zap, ChevronLeft, Sparkles, RefreshCw, Check, BookOpen, Copy, AlertCircle } from "lucide-react"
 import Link from "next/link"
 import { toast } from "sonner"
 import PaywallPreview from "@/components/paywall/PaywallPreview"
@@ -57,6 +57,9 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   const [viewport, setViewport] = useState<Viewport>("desktop")
   const [form, setForm] = useState<Partial<PaywallConfig>>({})
   const [briefCompleted, setBriefCompleted] = useState(false)
+  const [apiKey, setApiKey] = useState("")
+  const [stripeConnected, setStripeConnected] = useState(false)
+  const [snippetCopied, setSnippetCopied] = useState(false)
   const [aiSuggestions, setAiSuggestions] = useState<Array<{
     emotional_driver: string
     headline: string
@@ -75,15 +78,18 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     if (!user) return
     const { data: profile } = await supabase.from("users").select("account_id").eq("id", user.id).single()
 
-    const [{ data: pw }, { data: p }, { data: brief }] = await Promise.all([
+    const [{ data: pw }, { data: p }, { data: brief }, { data: acct }] = await Promise.all([
       supabase.from("paywalls").select("*").eq("id", id).single(),
       supabase.from("plans").select("*").eq("account_id", profile?.account_id).eq("is_active", true),
       supabase.from("project_briefs").select("completed_at").eq("account_id", profile?.account_id ?? "").maybeSingle(),
+      supabase.from("accounts").select("stripe_account_id").eq("id", profile?.account_id ?? "").single(),
     ])
     setPaywall(pw)
     setForm(pw ?? {})
     setPlans(p ?? [])
     setBriefCompleted(!!brief?.completed_at)
+    setApiKey(profile ? (await supabase.from("users").select("api_key").eq("id", user.id).single()).data?.api_key ?? "" : "")
+    setStripeConnected(!!acct?.stripe_account_id)
     setLoading(false)
   }
 
@@ -131,6 +137,13 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     toast.success("Copy applied!")
   }
 
+  function copyInstallSnippet() {
+    const snippet = `<script async src="https://cdn.hatch.io/v1/sdk.js" data-key="${apiKey}"></script>`
+    navigator.clipboard.writeText(snippet)
+    setSnippetCopied(true)
+    setTimeout(() => setSnippetCopied(false), 2000)
+  }
+
   async function handlePublish() {
     setPublishing(true)
     const newStatus = form.status === "live" ? "draft" : "live"
@@ -151,6 +164,8 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   }
 
   const selectedPlans = plans.filter(p => form.plan_ids?.includes(p.id) ?? true)
+  const hasSelectedPlans = (form.plan_ids?.length ?? 0) > 0
+  const canPublish = stripeConnected && hasSelectedPlans
 
   return (
     <div className="flex h-screen bg-[#0A0A0B]">
@@ -421,13 +436,27 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
 
         {/* Footer actions */}
         <div className="p-4 border-t border-white/6 space-y-2">
+          {form.status !== "live" && !canPublish && (
+            <div className="flex items-start gap-1.5 bg-amber-500/5 border border-amber-500/15 rounded-lg px-2.5 py-2 mb-1">
+              <AlertCircle className="w-3 h-3 text-amber-400 mt-0.5 flex-shrink-0" />
+              <p className="text-[10px] text-amber-400 leading-relaxed">
+                {!stripeConnected && !hasSelectedPlans
+                  ? "Connect Stripe and select a plan to publish"
+                  : !stripeConnected
+                  ? "Connect Stripe to publish"
+                  : "Select at least one plan to publish"}
+              </p>
+            </div>
+          )}
           <button
             onClick={handlePublish}
-            disabled={publishing}
+            disabled={publishing || (form.status !== "live" && !canPublish)}
             className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
               form.status === "live"
                 ? "bg-white/5 border border-white/10 text-[#A1A1AA] hover:text-white"
-                : "bg-indigo-600 hover:bg-indigo-500 text-white"
+                : canPublish
+                ? "bg-indigo-600 hover:bg-indigo-500 text-white"
+                : "bg-white/5 border border-white/10 text-[#52525B] cursor-not-allowed"
             }`}
           >
             {publishing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
@@ -518,7 +547,25 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
         )}
 
         <div className="mt-6 pt-4 border-t border-white/6">
-          <h3 className="text-xs font-semibold text-[#71717A] mb-3 uppercase tracking-wide">SDK Code</h3>
+          <h3 className="text-xs font-semibold text-[#71717A] mb-3 uppercase tracking-wide">Install Snippet</h3>
+          <div className="relative bg-[#0A0A0B] border border-white/6 rounded-lg p-2.5 mb-2">
+            <code className="text-[10px] text-indigo-300 font-mono break-all leading-relaxed block pr-6">
+              {`<script async\n  src="https://cdn.hatch.io/v1/sdk.js"\n  data-key="${apiKey || "pk_…"}"\n></script>`}
+            </code>
+            <button
+              onClick={copyInstallSnippet}
+              className="absolute top-2 right-2 p-1 bg-white/5 hover:bg-white/10 rounded border border-white/10 transition-colors"
+              title="Copy snippet"
+            >
+              {snippetCopied
+                ? <Check className="w-3 h-3 text-emerald-400" />
+                : <Copy className="w-3 h-3 text-[#71717A]" />}
+            </button>
+          </div>
+
+          <p className="text-[9px] text-[#52525B] mb-3">Paste once in your app's <code className="font-mono">&lt;head&gt;</code></p>
+
+          <h3 className="text-xs font-semibold text-[#71717A] mb-2 uppercase tracking-wide">Trigger</h3>
           <div className="bg-[#0A0A0B] border border-white/6 rounded-lg p-2.5">
             <code className="text-[10px] text-indigo-300 font-mono break-all">
               hatch.show('{id}')

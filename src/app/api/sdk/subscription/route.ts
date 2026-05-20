@@ -8,7 +8,13 @@ export async function GET(request: NextRequest) {
   const userId = request.nextUrl.searchParams.get("userId")
   const email = request.nextUrl.searchParams.get("email")
 
-  if (!apiKey) return NextResponse.json({ error: "Missing API key" }, { status: 401 })
+  const CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  }
+
+  if (!apiKey) return NextResponse.json({ error: "Missing API key" }, { status: 401, headers: CORS })
 
   const supabase = createServiceClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -16,7 +22,7 @@ export async function GET(request: NextRequest) {
   )
 
   const { data: user } = await supabase.from("users").select("account_id").eq("api_key", apiKey).single()
-  if (!user) return NextResponse.json({ error: "Invalid API key" }, { status: 401 })
+  if (!user) return NextResponse.json({ error: "Invalid API key" }, { status: 401, headers: CORS })
 
   let query = supabase
     .from("subscribers")
@@ -25,7 +31,7 @@ export async function GET(request: NextRequest) {
 
   if (userId) query = query.eq("external_user_id", userId)
   else if (email) query = query.eq("email", email)
-  else return NextResponse.json({ subscription: null })
+  else return NextResponse.json({ subscription: null }, { headers: CORS })
 
   const { data: subscriber } = await query.maybeSingle()
 
@@ -41,12 +47,7 @@ export async function GET(request: NextRequest) {
           }
         : null,
     },
-    {
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Cache-Control": "no-store",
-      },
-    }
+    { headers: { ...CORS, "Cache-Control": "no-store" } }
   )
 }
 

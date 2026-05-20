@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
   const paywallId = request.nextUrl.searchParams.get("paywall")
 
   if (!apiKey) {
-    return NextResponse.json({ error: "Missing API key" }, { status: 401 })
+    return NextResponse.json({ error: "Missing API key" }, { status: 401, headers: CORS_HEADERS })
   }
 
   const supabase = createServiceClient(
@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
   )
 
   const { data: user } = await supabase.from("users").select("account_id").eq("api_key", apiKey).single()
-  if (!user) return NextResponse.json({ error: "Invalid API key" }, { status: 401 })
+  if (!user) return NextResponse.json({ error: "Invalid API key" }, { status: 401, headers: CORS_HEADERS })
 
   if (paywallId) {
     const { data: paywall } = await supabase

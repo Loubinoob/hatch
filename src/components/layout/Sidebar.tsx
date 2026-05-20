@@ -17,8 +17,8 @@ const NAV = [
   { href: "/plans", label: "Plans", icon: CreditCard },
   { href: "/customers", label: "Customers", icon: Users },
   { href: "/analytics", label: "Analytics", icon: BarChart2 },
-  { href: "/recovery", label: "Recovery", icon: Mail },
-]
+  { href: "/recovery", label: "Recovery", icon: Mail, comingSoon: true },
+] as const
 
 export default function Sidebar({ appName }: { appName?: string }) {
   const pathname = usePathname()
@@ -45,8 +45,26 @@ export default function Sidebar({ appName }: { appName?: string }) {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-        {NAV.map(({ href, label, icon: Icon }) => {
-          const active = pathname === href || (href !== "/dashboard" && pathname.startsWith(href))
+        {NAV.map(({ href, label, icon: Icon, ...rest }) => {
+          const comingSoon = "comingSoon" in rest && rest.comingSoon
+          const active = !comingSoon && (pathname === href || (href !== "/dashboard" && pathname.startsWith(href)))
+
+          if (comingSoon) {
+            return (
+              <div
+                key={href}
+                title="Coming soon"
+                className="relative flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium text-[#3F3F46] cursor-default select-none"
+              >
+                <Icon className="w-4 h-4 flex-shrink-0" />
+                <span>{label}</span>
+                <span className="ml-auto text-[9px] font-semibold tracking-wide px-1.5 py-0.5 bg-white/5 border border-white/8 text-[#52525B] rounded-full uppercase">
+                  Soon
+                </span>
+              </div>
+            )
+          }
+
           return (
             <Link key={href} href={href} className={cn(
               "relative flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all group",

@@ -160,6 +160,7 @@ export default function OnboardingPage() {
           icp_description: brief.icp_description || null,
           emotional_drivers: brief.emotional_drivers,
           tone_of_voice: brief.tone_of_voice || null,
+          completed_at: new Date().toISOString(),
         })
       }
     }
