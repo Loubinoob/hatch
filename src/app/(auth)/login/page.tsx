@@ -1,20 +1,29 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
-import { Loader2, Mail, Lock, ArrowRight, Check, Zap, AlertCircle } from "lucide-react"
+import { Loader2, Mail, Lock, ArrowRight, Check, Zap } from "lucide-react"
 
 type Mode = "magic" | "password" | "signup"
 
+// Wrapped in Suspense so useSearchParams doesn't crash the page
 export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
+  )
+}
+
+function LoginForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const supabase = createClient()
 
-  const [mode, setMode] = useState<Mode>("magic")
+  const [mode, setMode] = useState<Mode>("password")
 
   // Show error from callback redirect
   useEffect(() => {
