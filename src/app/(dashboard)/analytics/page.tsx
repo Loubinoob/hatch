@@ -81,9 +81,9 @@ export default function AnalyticsPage() {
     setLoading(false)
   }
 
+  const totalRevenue = revenueByDay.reduce((s, d) => s + d.revenue, 0)
   const isEmpty = !loading && funnel.every(f => f.count === 0) && totalRevenue === 0
   const max = Math.max(...funnel.map(f => f.count), 1)
-  const totalRevenue = revenueByDay.reduce((s, d) => s + d.revenue, 0)
   const paywallShown = funnel[1]?.count ?? 0
   const conversions = funnel[4]?.count ?? 0
   const overallConvRate = paywallShown > 0 ? (conversions / paywallShown) * 100 : 0

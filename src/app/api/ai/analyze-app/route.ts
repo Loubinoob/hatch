@@ -74,7 +74,7 @@ async function extractPageContent(url: string): Promise<{ html: string; error?: 
 
 function stripHtml(html: string): string {
   // Extract meta tags + meaningful text, discard scripts/styles/noise
-  const title = html.match(/<title[^>]*>(.*?)<\/title>/si)?.[1] ?? ""
+  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? ""
   const description = html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i)?.[1] ?? ""
   const ogTitle = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)?.[1] ?? ""
   const ogDesc = html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i)?.[1] ?? ""
