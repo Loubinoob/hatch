@@ -60,6 +60,23 @@ export default function PaywallsPage() {
       cta_copy: "Get started today",
     }).select().single()
     if (error) { toast.error(error.message); setCreating(false); return }
+
+    // Auto-create the "Control" variant — baseline for all AI experiments
+    await supabase.from("paywall_variants").insert({
+      paywall_id: data.id,
+      account_id: accountId,
+      name: "Control",
+      generated_by: "human",
+      is_control: true,
+      headline: "Unlock the full power of your app",
+      subheadline: "Join thousands of users who've upgraded",
+      cta_copy: "Get started today",
+      accent_color: "#6366F1",
+      posterior_alpha: 1,
+      posterior_beta: 1,
+      traffic_split: null,
+    })
+
     router.push(`/paywalls/${data.id}`)
   }
 

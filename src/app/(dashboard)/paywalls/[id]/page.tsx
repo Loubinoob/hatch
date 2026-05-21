@@ -3,7 +3,7 @@
 import { useEffect, useState, use } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { motion } from "framer-motion"
-import { Loader2, Eye, Smartphone, Monitor, Tablet, Save, Zap, ChevronLeft, Sparkles, RefreshCw, Check, BookOpen, Copy, AlertCircle } from "lucide-react"
+import { Loader2, Eye, Smartphone, Monitor, Tablet, Save, Zap, ChevronLeft, Sparkles, RefreshCw, Check, BookOpen, Copy, AlertCircle, Brain, Archive, TrendingUp, BarChart2, Clock, Activity, Lightbulb } from "lucide-react"
 import Link from "next/link"
 import { toast } from "sonner"
 import PaywallPreview from "@/components/paywall/PaywallPreview"
@@ -43,7 +43,43 @@ const VIEWPORTS: { key: Viewport; icon: typeof Monitor; width: number }[] = [
   { key: "mobile", icon: Smartphone, width: 375 },
 ]
 
-const TABS = ["Design", "Content", "Pricing", "Triggers"]
+const TABS = ["Design", "Content", "Pricing", "Triggers", "AI Optimizer"]
+
+type Variant = {
+  id: string
+  name: string
+  headline: string | null
+  subheadline: string | null
+  cta_copy: string | null
+  body_copy: string | null
+  accent_color: string | null
+  views: number
+  conversions: number
+  posterior_alpha: number
+  posterior_beta: number
+  generated_by: "human" | "ai"
+  hypothesis: string | null
+  is_control: boolean
+  archived_at: string | null
+}
+
+type AgentRun = {
+  id: string
+  run_type: "generation" | "reflection" | "manual_trigger"
+  status: "pending" | "running" | "succeeded" | "failed"
+  reasoning: string | null
+  output_summary: Record<string, unknown> | null
+  created_at: string
+}
+
+type AgentInsight = {
+  id: string
+  insight: string
+  category: string
+  importance: number
+  evidence: Record<string, unknown>
+  generated_at: string
+}
 
 export default function PaywallBuilderPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
@@ -60,6 +96,13 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   const [apiKey, setApiKey] = useState("")
   const [stripeConnected, setStripeConnected] = useState(false)
   const [snippetCopied, setSnippetCopied] = useState(false)
+  // AI Optimizer state
+  const [variants, setVariants] = useState<Variant[]>([])
+  const [agentRuns, setAgentRuns] = useState<AgentRun[]>([])
+  const [insights, setInsights] = useState<AgentInsight[]>([])
+  const [agentLoading, setAgentLoading] = useState(false)
+  const [optimizerLoaded, setOptimizerLoaded] = useState(false)
+
   const [aiSuggestions, setAiSuggestions] = useState<Array<{
     emotional_driver: string
     headline: string
@@ -72,6 +115,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   const [appliedIdx, setAppliedIdx] = useState<number | null>(null)
 
   useEffect(() => { loadPaywall() }, [id])
+  useEffect(() => { if (activeTab === 4) loadOptimizer() }, [activeTab])
 
   async function loadPaywall() {
     const { data: { user } } = await supabase.auth.getUser()
@@ -93,6 +137,75 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     setLoading(false)
   }
 
+  async function loadOptimizer() {
+    if (optimizerLoaded) return
+    const [{ data: v }, { data: r }, { data: ins }] = await Promise.all([
+      supabase.from("paywall_variants").select("*").eq("paywall_id", id).is("archived_at", null).order("created_at"),
+      supabase.from("agent_runs").select("*").eq("paywall_id", id).order("created_at", { ascending: false }).limit(30),
+      supabase.from("agent_insights").select("*").eq("paywall_id", id).order("importance", { ascending: false }).order("generated_at", { ascending: false }).limit(20),
+    ])
+    setVariants((v ?? []) as Variant[])
+    setAgentRuns((r ?? []) as AgentRun[])
+    setInsights((ins ?? []) as AgentInsight[])
+    setOptimizerLoaded(true)
+  }
+
+  async function handleGenerateVariants() {
+    setAgentLoading(true)
+    try {
+      const res = await fetch("/api/agent/generate-variants", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paywall_id: id, count: 3, force: false }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        if (data.skip) {
+          toast.info(data.message)
+        } else {
+          toast.error(data.error ?? "Generation failed")
+        }
+        return
+      }
+      toast.success(`✨ ${data.variants_created} variants created — ${data.strategy_summary}`)
+      setOptimizerLoaded(false)
+      await loadOptimizer()
+    } catch {
+      toast.error("Generation failed")
+    } finally {
+      setAgentLoading(false)
+    }
+  }
+
+  async function handleReflect() {
+    setAgentLoading(true)
+    try {
+      const res = await fetch("/api/agent/reflect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paywall_id: id }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        toast.error(data.error ?? "Reflection failed")
+        return
+      }
+      toast.success(`🔍 Reflection done — ${data.actions_taken?.length ?? 0} actions taken`)
+      setOptimizerLoaded(false)
+      await loadOptimizer()
+    } catch {
+      toast.error("Reflection failed")
+    } finally {
+      setAgentLoading(false)
+    }
+  }
+
+  async function archiveVariant(variantId: string) {
+    await supabase.from("paywall_variants").update({ archived_at: new Date().toISOString(), archive_reason: "Manually archived by founder" }).eq("id", variantId)
+    setVariants(v => v.filter(x => x.id !== variantId))
+    toast.success("Variant archived")
+  }
+
   function update(key: keyof PaywallConfig, value: unknown) {
     setForm(f => ({ ...f, [key]: value }))
   }
@@ -100,7 +213,17 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   async function handleSave() {
     setSaving(true)
     const { error } = await supabase.from("paywalls").update({ ...form, updated_at: new Date().toISOString() }).eq("id", id)
-    if (error) { toast.error(error.message) } else { toast.success("Saved") }
+    if (error) { toast.error(error.message); setSaving(false); return }
+
+    // Keep control variant in sync with paywall edits
+    await supabase.from("paywall_variants").update({
+      headline: form.headline,
+      subheadline: form.subheadline ?? null,
+      cta_copy: form.cta_copy,
+      accent_color: (form.design as Record<string, string>)?.accentColor ?? "#6366F1",
+    }).eq("paywall_id", id).eq("is_control", true)
+
+    toast.success("Saved")
     setSaving(false)
   }
 
@@ -417,6 +540,162 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                 </label>
               ))}
             </>
+          )}
+
+          {/* AI Optimizer tab */}
+          {activeTab === 4 && (
+            <div className="space-y-5">
+              {/* Action buttons */}
+              <div className="flex gap-2">
+                <button
+                  onClick={handleGenerateVariants}
+                  disabled={agentLoading}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 hover:bg-indigo-600/30 text-xs font-medium transition-all disabled:opacity-50"
+                >
+                  {agentLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                  Generate
+                </button>
+                <button
+                  onClick={handleReflect}
+                  disabled={agentLoading}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-white/5 border border-white/10 text-[#A1A1AA] hover:text-white text-xs font-medium transition-all disabled:opacity-50"
+                >
+                  {agentLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Brain className="w-3 h-3" />}
+                  Reflect
+                </button>
+              </div>
+
+              {/* Active Variants */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <BarChart2 className="w-3.5 h-3.5 text-indigo-400" />
+                  <span className="text-xs font-semibold text-white">Active Variants</span>
+                  <span className="ml-auto text-[10px] text-[#52525B]">{variants.length} running</span>
+                </div>
+                {variants.length === 0 ? (
+                  <div className="bg-white/2 border border-dashed border-white/10 rounded-lg p-4 text-center">
+                    <p className="text-[11px] text-[#52525B]">No variants yet. Click "Generate" to start.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {variants.map(v => {
+                      const total = (v.posterior_alpha ?? 1) + (v.posterior_beta ?? 1) - 2
+                      const convRate = total > 0
+                        ? ((v.posterior_alpha ?? 1) - 1) / total * 100
+                        : 0
+                      return (
+                        <div key={v.id} className="bg-white/3 border border-white/6 rounded-lg p-3 space-y-2">
+                          <div className="flex items-start justify-between gap-1">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-xs font-semibold text-white truncate">{v.name}</span>
+                                {v.is_control && <span className="text-[9px] px-1.5 py-0.5 rounded bg-white/10 text-[#71717A] font-medium">CONTROL</span>}
+                                {v.generated_by === "ai" && <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 font-medium">AI</span>}
+                              </div>
+                              {v.hypothesis && <p className="text-[10px] text-[#52525B] italic mt-0.5 leading-tight">{v.hypothesis}</p>}
+                            </div>
+                            {!v.is_control && (
+                              <button onClick={() => archiveVariant(v.id)} className="p-1 text-[#52525B] hover:text-red-400 transition-colors flex-shrink-0" title="Archive">
+                                <Archive className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                          {/* Stats */}
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="text-[#71717A]">{v.views ?? 0} views</span>
+                            <span className="text-[#71717A]">{v.conversions ?? 0} conv</span>
+                            <span className={convRate > 0 ? "text-emerald-400 font-mono" : "text-[#52525B] font-mono"}>
+                              {total > 0 ? `${convRate.toFixed(1)}%` : "—"}
+                            </span>
+                          </div>
+                          {/* Confidence bar */}
+                          <div className="w-full bg-white/5 rounded-full h-1">
+                            <div
+                              className="h-1 rounded-full bg-indigo-500 transition-all"
+                              style={{ width: `${Math.min(100, (v.views ?? 0) / 200 * 100)}%` }}
+                              title={`${Math.round(Math.min(100, (v.views ?? 0) / 200 * 100))}% confidence`}
+                            />
+                          </div>
+                          <p className="text-[9px] text-[#52525B]">{(v.views ?? 0) < 100 ? `${100 - (v.views ?? 0)} views to confidence` : "Sufficient data"}</p>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Live Activity */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Activity className="w-3.5 h-3.5 text-indigo-400" />
+                  <span className="text-xs font-semibold text-white">Agent Activity</span>
+                </div>
+                {agentRuns.length === 0 ? (
+                  <p className="text-[11px] text-[#52525B] text-center py-2">No runs yet</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {agentRuns.slice(0, 8).map(r => (
+                      <div key={r.id} className="flex items-start gap-2 bg-white/2 rounded-lg p-2.5 border border-white/5">
+                        <span className="text-base mt-0.5 flex-shrink-0">
+                          {r.run_type === "generation" ? "✨" : "🔍"}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <span className="text-[10px] text-white font-medium capitalize">{r.run_type}</span>
+                            <span className={`text-[9px] px-1 py-0.5 rounded font-medium ${
+                              r.status === "succeeded" ? "text-emerald-400 bg-emerald-500/10" :
+                              r.status === "failed" ? "text-red-400 bg-red-500/10" :
+                              "text-amber-400 bg-amber-500/10"
+                            }`}>{r.status}</span>
+                            <span className="text-[9px] text-[#52525B] ml-auto flex items-center gap-0.5">
+                              <Clock className="w-2.5 h-2.5" />
+                              {new Date(r.created_at).toLocaleDateString()}
+                            </span>
+                          </div>
+                          {r.reasoning && <p className="text-[10px] text-[#71717A] leading-tight">{r.reasoning}</p>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Insights Memory */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Lightbulb className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="text-xs font-semibold text-white">Insights Memory</span>
+                  <span className="ml-auto text-[10px] text-[#52525B]">{insights.length} total</span>
+                </div>
+                {insights.length === 0 ? (
+                  <p className="text-[11px] text-[#52525B] text-center py-2">Run "Reflect" to extract insights</p>
+                ) : (
+                  <div className="space-y-2">
+                    {insights.slice(0, 5).map(ins => (
+                      <div key={ins.id} className="bg-white/2 border border-white/6 rounded-lg p-3">
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium capitalize ${
+                            ins.category === "copy" ? "bg-indigo-500/20 text-indigo-400" :
+                            ins.category === "pricing" ? "bg-emerald-500/15 text-emerald-400" :
+                            ins.category === "cta" ? "bg-purple-500/15 text-purple-400" :
+                            "bg-white/8 text-[#71717A]"
+                          }`}>{ins.category}</span>
+                          <div className="flex gap-0.5 ml-auto">
+                            {Array.from({ length: 5 }).map((_, i) => (
+                              <div key={i} className={`w-1.5 h-1.5 rounded-full ${i < Math.round(ins.importance / 2) ? "bg-amber-400" : "bg-white/10"}`} />
+                            ))}
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-white leading-snug">{ins.insight}</p>
+                        {(ins.evidence as Record<string, string>)?.summary && (
+                          <p className="text-[9px] text-[#52525B] mt-1">{(ins.evidence as Record<string, string>).summary}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
           )}
 
           {/* Triggers tab */}

@@ -24,6 +24,7 @@
     config: null,
     activePaywall: null,
     initialized: false,
+    variantId: null, // Active variant assigned by Thompson sampling
   }
 
   // ─── Utils ─────────────────────────────────────────────────────────────────
@@ -301,6 +302,7 @@
       userId: state.userId,
       sessionId: state.sessionId,
       paywallId: state.activePaywall ? state.activePaywall.config.id : null,
+      variantId: state.variantId || null, // Always propagate active variant
       properties: properties || {},
     }
     // Fire-and-forget
@@ -323,12 +325,16 @@
 
     var url = API_BASE + '/sdk/config?key=' + state.apiKey
     if (paywallId) url += '&paywall=' + paywallId
+    if (state.sessionId) url += '&session=' + state.sessionId
 
     try {
       var res = await fetch(url)
       var data = await res.json()
       var config = data.paywall || (data.paywalls && data.paywalls[0])
       if (!config) { console.warn('[Hatch] No live paywall found'); return }
+
+      // Store variant_id assigned by Thompson sampling
+      if (config._variant_id) state.variantId = config._variant_id
 
       var plans = config.plan_ids && config.plan_ids.length > 0
         ? config.plans.filter(function(p) { return config.plan_ids.includes(p.id) })
