@@ -88,7 +88,10 @@ For each variation, return:
 - headline: A powerful, specific headline (max 10 words). No generic phrases like "Unlock Premium Features".
 - subheadline: A 1-2 sentence supporting statement that adds specificity and urgency (max 25 words).
 - cta_text: Call-to-action button text (2-5 words, action-oriented).
-- body_copy: 2-3 bullet points highlighting key benefits. Each bullet starts with an emoji.
+- body_copy: 2-3 bullet points highlighting key benefits. Each bullet starts with an emoji. Use newlines between bullets.
+- guarantee_text: A short money-back or satisfaction guarantee statement (max 8 words). Example: "30-day money-back guarantee, no questions asked."
+- urgency_text: A short urgency or scarcity line (max 10 words). Start with an emoji. Example: "⚡ Offer ends Friday — save 40% today."
+- trust_badges: An array of 3 short trust signals (max 4 words each). Examples: ["256-bit SSL", "GDPR compliant", "Cancel anytime"].
 - tone: How this copy feels (e.g. "urgent", "aspirational", "reassuring").
 
 Respond with this exact JSON structure:
@@ -100,6 +103,9 @@ Respond with this exact JSON structure:
       "subheadline": "string",
       "cta_text": "string",
       "body_copy": "string",
+      "guarantee_text": "string",
+      "urgency_text": "string",
+      "trust_badges": ["string", "string", "string"],
       "tone": "string"
     }
   ]
@@ -123,6 +129,9 @@ Respond with this exact JSON structure:
       subheadline: string
       cta_text: string
       body_copy: string
+      guarantee_text?: string
+      urgency_text?: string
+      trust_badges?: string[]
       tone: string
     }> }
 
