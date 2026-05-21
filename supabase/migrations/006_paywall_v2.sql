@@ -34,6 +34,15 @@ alter table public.paywalls
   add column if not exists success_redirect_url text,
   add column if not exists hide_powered_by boolean default false;
 
+  -- Content (V2 extras)
+  add column if not exists social_proof_type text default 'text'
+    check (social_proof_type in ('none','text','stars','user_count'));
+
 -- Add new templates to template check (drop constraint first if exists)
 alter table public.paywalls
   drop constraint if exists paywalls_template_check;
+
+-- Re-add template constraint with all 6 templates
+alter table public.paywalls
+  add constraint paywalls_template_check
+  check (template in ('classic-modal','slide-in','fullscreen','bottom-sheet','minimal','side-panel'));
