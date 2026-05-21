@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
 import { createClient } from "@/lib/supabase/client"
@@ -51,6 +51,19 @@ export default function OnboardingPage() {
   // Step 3 — snippet
   const [apiKey] = useState(() => generateApiKey())
   const [snippetTab, setSnippetTab] = useState<"html" | "react" | "lovable">("html")
+
+  // ─── Detect return from Stripe OAuth ─────────────────────────────────────────
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const connectOrigin = sessionStorage.getItem("stripe_connect_origin")
+    if (params.get("stripe_connected") === "true" && connectOrigin === "onboarding") {
+      sessionStorage.removeItem("stripe_connect_origin")
+      setStripeConnected(true)
+      setStripeEmail(params.get("stripe_email") ?? "")
+      setStep(1)
+      window.history.replaceState({}, "", "/onboarding")
+    }
+  }, [])
 
   // ─── Plan helpers ────────────────────────────────────────────────────────────
   function addPlan() {
@@ -136,10 +149,10 @@ export default function OnboardingPage() {
   }
 
   // ─── Step 1: Stripe ──────────────────────────────────────────────────────────
-  async function handleStripeConnect() {
-    const res = await fetch("/api/stripe/connect")
-    const { url } = await res.json()
-    window.location.href = url
+  function handleStripeConnect() {
+    // Mark origin so the callback can redirect back here
+    sessionStorage.setItem("stripe_connect_origin", "onboarding")
+    window.location.href = "/api/stripe/connect"
   }
 
   // ─── Step 2: Plans ───────────────────────────────────────────────────────────

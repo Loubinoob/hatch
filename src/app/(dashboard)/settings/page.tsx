@@ -21,7 +21,19 @@ export default function SettingsPage() {
   const [stripeConn, setStripeConn] = useState<{ stripe_email: string; connected_at: string } | null>(null)
   const [commissions, setCommissions] = useState<{ gross_cents: number; commission_cents: number }[]>([])
 
-  useEffect(() => { loadData() }, [])
+  useEffect(() => {
+    loadData()
+    // Show success toast if returning from Stripe OAuth
+    const params = new URLSearchParams(window.location.search)
+    if (params.get("stripe_connected") === "true") {
+      toast.success("Stripe connecté avec succès !")
+      window.history.replaceState({}, "", "/settings")
+    }
+    if (params.get("stripe_error")) {
+      toast.error(`Erreur Stripe : ${params.get("stripe_error")}`)
+      window.history.replaceState({}, "", "/settings")
+    }
+  }, [])
 
   async function loadData() {
     const { data: { user: u } } = await supabase.auth.getUser()
