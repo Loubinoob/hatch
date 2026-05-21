@@ -174,8 +174,13 @@ export async function POST(request: Request) {
       source,
       fetch_error: fetchError ?? null,
     })
-  } catch (err) {
+  } catch (err: unknown) {
     console.error("Analyze-app error:", err)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    // Surface Anthropic auth errors clearly
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes("401") || msg.toLowerCase().includes("api key") || msg.toLowerCase().includes("authentication")) {
+      return NextResponse.json({ error: "Anthropic API key manquante ou invalide. Vérifie ANTHROPIC_API_KEY dans .env.local." }, { status: 500 })
+    }
+    return NextResponse.json({ error: msg || "Internal server error" }, { status: 500 })
   }
 }
