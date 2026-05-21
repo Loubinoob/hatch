@@ -20,31 +20,55 @@ export default function LoginPage() {
     e.preventDefault()
     setLoading(true)
 
+    // ── Cas A & D : inscription ──────────────────────────────
     if (isSignup) {
-      // Create account via server route (auto-confirms email, no email sent)
       const res = await fetch("/api/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, name }),
       })
       const data = await res.json()
-      if (!res.ok) {
-        toast.error(data.error ?? "Failed to create account")
+      if (!res.ok && res.status !== 409) {
+        // 409 = email déjà existant → on tente quand même le login
+        toast.error(data.error ?? "Impossible de créer le compte")
         setLoading(false)
         return
       }
     }
 
-    // Sign in (works for both new signup and existing login)
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    // ── Connexion (tous les cas) ─────────────────────────────
+    const signIn = async () => supabase.auth.signInWithPassword({ email, password })
+
+    let { error } = await signIn()
+
+    // ── Cas B : email non confirmé → on confirme puis on réessaie ──
+    if (error?.message.toLowerCase().includes("email not confirmed")) {
+      const confirmRes = await fetch("/api/auth/confirm-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      })
+      if (!confirmRes.ok) {
+        toast.error("Impossible de confirmer l'email. Contactez le support.")
+        setLoading(false)
+        return
+      }
+      const retry = await signIn()
+      error = retry.error ?? null
+    }
+
     setLoading(false)
 
     if (error) {
-      toast.error(error.message)
+      if (error.message.toLowerCase().includes("invalid login credentials")) {
+        toast.error("Email ou mot de passe incorrect.")
+      } else {
+        toast.error(error.message)
+      }
       return
     }
 
-    // Check onboarding status
+    // ── Redirect selon onboarding ────────────────────────────
     const { data: { user } } = await supabase.auth.getUser()
     if (user) {
       const { data: profile } = await supabase
