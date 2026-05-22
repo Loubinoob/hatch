@@ -65,7 +65,7 @@ const CHECKLIST_ITEMS = [
   { key: "stripe", label: "Connect Stripe", desc: "Accept payments via Stripe Connect", href: "/settings", icon: CreditCard },
   { key: "plan", label: "Create a plan", desc: "Define your pricing tiers", href: "/plans", icon: DollarSign },
   { key: "brief", label: "Complete project brief", desc: "Unlock AI-generated paywall copy", href: "/settings/project-brief", icon: BookOpen },
-  { key: "sdk", label: "Install the SDK", desc: "Add one script tag to your app", href: "/settings", icon: Radio },
+  { key: "sdk", label: "Install the SDK", desc: "Add one script tag to your app", href: "/integrate", icon: Radio },
   { key: "paywall", label: "Create a paywall", desc: "Set up your first upgrade screen", href: "/paywalls", icon: Layers },
 ] as const
 
