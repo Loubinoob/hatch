@@ -3,8 +3,7 @@ import { createClient as createServiceClient } from "@supabase/supabase-js"
 
 export const dynamic = "force-dynamic"
 
-// Nightly cron — runs at 03:00 UTC via Vercel cron
-// Protected by CRON_SECRET header
+// Runs every 6h via Vercel cron — reflects on paywalls with ≥ 30 new events
 export async function GET(request: NextRequest) {
   const secret = request.headers.get("authorization")
   if (secret !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -16,41 +15,42 @@ export async function GET(request: NextRequest) {
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   )
 
-  // Find all live paywalls that had ≥ 50 events in the last 24h
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-  const { data: activePaywalls } = await service
+  // Find paywalls with ≥ 30 events in the last 6h
+  const since = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString()
+  const { data: recentEvents } = await service
     .from("events")
-    .select("paywall_id")
+    .select("paywall_id, account_id")
     .gte("created_at", since)
     .not("paywall_id", "is", null)
 
-  if (!activePaywalls?.length) {
-    return NextResponse.json({ ok: true, message: "No active paywalls in last 24h" })
+  if (!recentEvents?.length) {
+    return NextResponse.json({ ok: true, message: "No events in last 6h" })
   }
 
-  // Count events per paywall
-  const counts: Record<string, number> = {}
-  for (const e of activePaywalls) {
-    if (e.paywall_id) counts[e.paywall_id] = (counts[e.paywall_id] ?? 0) + 1
+  // Count events per paywall + map to account_id
+  const counts: Record<string, { count: number; account_id: string }> = {}
+  for (const e of recentEvents) {
+    if (e.paywall_id) {
+      if (!counts[e.paywall_id]) counts[e.paywall_id] = { count: 0, account_id: e.account_id ?? "" }
+      counts[e.paywall_id].count++
+    }
   }
 
   const qualifiedPaywallIds = Object.entries(counts)
-    .filter(([, c]) => c >= 50)
+    .filter(([, v]) => v.count >= 30)
     .map(([id]) => id)
 
   if (!qualifiedPaywallIds.length) {
-    return NextResponse.json({ ok: true, message: "No paywalls with ≥ 50 events in last 24h" })
+    return NextResponse.json({ ok: true, message: "No paywalls with ≥ 30 events in last 6h" })
   }
 
-  // Idempotency — skip paywalls already reflected since midnight
-  const midnight = new Date()
-  midnight.setUTCHours(0, 0, 0, 0)
+  // Idempotency — skip paywalls already reflected in last 6h
   const { data: alreadyRun } = await service
     .from("agent_runs")
     .select("paywall_id")
     .eq("run_type", "reflection")
     .in("paywall_id", qualifiedPaywallIds)
-    .gte("created_at", midnight.toISOString())
+    .gte("created_at", since)
 
   const alreadyRunIds = new Set((alreadyRun ?? []).map(r => r.paywall_id))
   const toProcess = qualifiedPaywallIds.filter(id => !alreadyRunIds.has(id))
@@ -60,15 +60,14 @@ export async function GET(request: NextRequest) {
 
   for (const paywallId of toProcess) {
     try {
-      // Get an auth cookie isn't available in cron — use service role directly
-      // Call the reflect logic inline instead of via HTTP
+      const accountId = counts[paywallId]?.account_id
       const res = await fetch(`${origin}/api/agent/reflect`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-cron-secret": process.env.CRON_SECRET ?? "",
         },
-        body: JSON.stringify({ paywall_id: paywallId, _cron: true }),
+        body: JSON.stringify({ paywall_id: paywallId, account_id: accountId, _cron: true }),
       })
       const data = await res.json()
       results.push({

@@ -82,7 +82,7 @@ const VIEWPORTS: { key: Viewport; icon: typeof Monitor; width: number }[] = [
   { key: "mobile", icon: Smartphone, width: 375 },
 ]
 
-const TABS = ["Design", "Content", "Pricing", "Triggers", "Languages", "Advanced", "AI"]
+const TABS = ["Design", "Content", "Pricing", "Quiz", "Triggers", "Languages", "Advanced", "AI"]
 
 const LOCALES = [
   { code: "en", label: "English" },
@@ -130,6 +130,16 @@ type AgentInsight = {
   importance: number
   evidence: Record<string, unknown>
   generated_at: string
+}
+
+type QuizOption = { value: string; label: string }
+type QuizQuestion = { id: string; question: string; type: "single_choice"; options: QuizOption[] }
+type QuizConfig = {
+  id?: string
+  is_active: boolean
+  trigger_mode: "before_paywall" | "optional" | "disabled"
+  questions: QuizQuestion[]
+  completion_message: string
 }
 
 const DEFAULT_TRIGGER_CONFIG = {
@@ -180,9 +190,21 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   const [newBadge, setNewBadge] = useState("")
   // Localization editor
   const [activeLang, setActiveLang] = useState<string | null>(null)
+  // Quiz state
+  const [quiz, setQuiz] = useState<QuizConfig>({
+    is_active: false,
+    trigger_mode: "before_paywall",
+    questions: [],
+    completion_message: "Great — finding your perfect plan…",
+  })
+  const [quizLoaded, setQuizLoaded] = useState(false)
+  const [generatingQuiz, setGeneratingQuiz] = useState(false)
+  const [savingQuiz, setSavingQuiz] = useState(false)
+  const [editingQuestionIdx, setEditingQuestionIdx] = useState<number | null>(null)
 
   useEffect(() => { loadPaywall() }, [id])
-  useEffect(() => { if (activeTab === 6) loadOptimizer() }, [activeTab])
+  useEffect(() => { if (activeTab === 7) loadOptimizer() }, [activeTab])
+  useEffect(() => { if (activeTab === 3 && !quizLoaded) loadQuiz() }, [activeTab])
 
   async function loadPaywall() {
     const { data: { user } } = await supabase.auth.getUser()
@@ -220,6 +242,103 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     setAgentRuns((r ?? []) as AgentRun[])
     setInsights((ins ?? []) as AgentInsight[])
     setOptimizerLoaded(true)
+  }
+
+  async function loadQuiz() {
+    const { data } = await supabase.from("paywall_quizzes").select("*").eq("paywall_id", id).maybeSingle()
+    if (data) {
+      setQuiz({
+        id: data.id,
+        is_active: data.is_active ?? false,
+        trigger_mode: data.trigger_mode ?? "before_paywall",
+        questions: (data.questions as QuizQuestion[]) ?? [],
+        completion_message: data.completion_message ?? "Great — finding your perfect plan…",
+      })
+    }
+    setQuizLoaded(true)
+  }
+
+  async function saveQuiz() {
+    setSavingQuiz(true)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+      const { data: profile } = await supabase.from("users").select("account_id").eq("id", user.id).single()
+
+      const payload = {
+        paywall_id: id,
+        account_id: profile?.account_id,
+        is_active: quiz.is_active,
+        trigger_mode: quiz.trigger_mode,
+        questions: quiz.questions,
+        completion_message: quiz.completion_message,
+        ai_generated: false,
+      }
+
+      if (quiz.id) {
+        await supabase.from("paywall_quizzes").update(payload).eq("id", quiz.id)
+      } else {
+        const { data } = await supabase.from("paywall_quizzes").upsert(
+          payload, { onConflict: "paywall_id" }
+        ).select().single()
+        if (data) setQuiz(q => ({ ...q, id: data.id }))
+      }
+      toast.success("Quiz saved")
+    } catch { toast.error("Failed to save quiz") }
+    finally { setSavingQuiz(false) }
+  }
+
+  async function generateQuizQuestions() {
+    setGeneratingQuiz(true)
+    try {
+      const res = await fetch("/api/ai/generate-quiz-questions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paywall_id: id }),
+      })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error ?? "Generation failed"); return }
+      setQuiz(q => ({ ...q, questions: data.questions ?? [], ai_generated: true }))
+      toast.success(`✨ ${data.questions?.length ?? 0} questions generated`)
+    } catch { toast.error("Failed to generate questions") }
+    finally { setGeneratingQuiz(false) }
+  }
+
+  function updateQuestion(idx: number, field: keyof QuizQuestion, value: string) {
+    setQuiz(q => {
+      const qs = [...q.questions]
+      qs[idx] = { ...qs[idx], [field]: value }
+      return { ...q, questions: qs }
+    })
+  }
+
+  function updateQuestionOption(qIdx: number, oIdx: number, field: "value" | "label", value: string) {
+    setQuiz(q => {
+      const qs = [...q.questions]
+      const opts = [...qs[qIdx].options]
+      opts[oIdx] = { ...opts[oIdx], [field]: value }
+      qs[qIdx] = { ...qs[qIdx], options: opts }
+      return { ...q, questions: qs }
+    })
+  }
+
+  function addQuestion() {
+    const newQ: QuizQuestion = {
+      id: `q${quiz.questions.length + 1}_custom`,
+      question: "New question",
+      type: "single_choice",
+      options: [
+        { value: "option_a", label: "Option A" },
+        { value: "option_b", label: "Option B" },
+      ],
+    }
+    setQuiz(q => ({ ...q, questions: [...q.questions, newQ] }))
+    setEditingQuestionIdx(quiz.questions.length)
+  }
+
+  function removeQuestion(idx: number) {
+    setQuiz(q => ({ ...q, questions: q.questions.filter((_, i) => i !== idx) }))
+    setEditingQuestionIdx(null)
   }
 
   async function handleGenerateVariants() {
@@ -817,8 +936,192 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
             </>
           )}
 
-          {/* ── TRIGGERS TAB ───────────────────────────────────────── */}
+          {/* ── QUIZ TAB ───────────────────────────────────────────── */}
           {activeTab === 3 && (
+            <div className="space-y-4">
+              {/* Enable toggle */}
+              <div className="flex items-center justify-between p-3 rounded-lg bg-white/3 border border-white/6">
+                <div>
+                  <p className="text-xs font-medium text-[#A1A1AA]">Enable pre-paywall quiz</p>
+                  <p className="text-[10px] text-[#52525B] mt-0.5">Show a quiz before the paywall to personalise the offer</p>
+                </div>
+                <button
+                  onClick={() => setQuiz(q => ({ ...q, is_active: !q.is_active }))}
+                  className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 ${quiz.is_active ? "bg-indigo-600" : "bg-white/10"}`}
+                >
+                  <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${quiz.is_active ? "translate-x-4.5" : "translate-x-0.5"}`} />
+                </button>
+              </div>
+
+              {quiz.is_active && (
+                <>
+                  {/* Trigger mode */}
+                  <div>
+                    <label className="text-xs text-[#71717A] mb-1.5 block font-medium">Quiz mode</label>
+                    <div className="flex gap-2">
+                      {([
+                        { key: "before_paywall", label: "Required" },
+                        { key: "optional", label: "Optional" },
+                      ] as const).map(m => (
+                        <button
+                          key={m.key}
+                          onClick={() => setQuiz(q => ({ ...q, trigger_mode: m.key }))}
+                          className={`flex-1 py-1.5 text-[11px] font-medium rounded-lg border transition-all ${
+                            quiz.trigger_mode === m.key
+                              ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-400"
+                              : "border-white/6 bg-white/3 text-[#71717A] hover:text-[#A1A1AA]"
+                          }`}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-[#52525B] mt-1.5">
+                      {quiz.trigger_mode === "before_paywall"
+                        ? "Users must complete the quiz before seeing the paywall."
+                        : "A 'Skip' option is shown on the quiz."}
+                    </p>
+                  </div>
+
+                  {/* Generate with AI */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={generateQuizQuestions}
+                      disabled={generatingQuiz}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 hover:bg-indigo-600/30 text-xs font-medium transition-all disabled:opacity-50"
+                    >
+                      {generatingQuiz ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                      {generatingQuiz ? "Generating…" : "Generate with AI"}
+                    </button>
+                    <button
+                      onClick={addQuestion}
+                      className="flex items-center justify-center gap-1 py-2 px-3 rounded-lg bg-white/5 border border-white/10 text-[#A1A1AA] hover:text-white text-xs font-medium transition-all"
+                    >
+                      <Plus className="w-3 h-3" />
+                      Add
+                    </button>
+                  </div>
+
+                  {/* Questions list */}
+                  {quiz.questions.length === 0 && !generatingQuiz && (
+                    <div className="text-center py-8 text-[#52525B] text-xs">
+                      No questions yet — generate with AI or add manually.
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    {quiz.questions.map((q, qi) => (
+                      <div key={qi} className="border border-white/6 rounded-lg overflow-hidden">
+                        {/* Question header */}
+                        <div
+                          className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-white/3 transition-colors"
+                          onClick={() => setEditingQuestionIdx(editingQuestionIdx === qi ? null : qi)}
+                        >
+                          <span className="text-[10px] text-indigo-400 font-mono font-semibold w-5 flex-shrink-0">Q{qi + 1}</span>
+                          <span className="text-xs text-[#A1A1AA] flex-1 truncate">{q.question}</span>
+                          <button
+                            onClick={e => { e.stopPropagation(); removeQuestion(qi) }}
+                            className="text-[#52525B] hover:text-red-400 transition-colors p-0.5"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+
+                        {/* Expanded editor */}
+                        {editingQuestionIdx === qi && (
+                          <div className="px-3 pb-3 space-y-2.5 border-t border-white/6 pt-2.5 bg-white/2">
+                            <div>
+                              <label className="text-[10px] text-[#52525B] mb-1 block">Question text</label>
+                              <input
+                                value={q.question}
+                                onChange={e => updateQuestion(qi, "question", e.target.value)}
+                                className="hatch-input text-xs"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-[#52525B] mb-1 block">Options</label>
+                              <div className="space-y-1.5">
+                                {q.options.map((opt, oi) => (
+                                  <div key={oi} className="flex gap-1.5">
+                                    <input
+                                      value={opt.label}
+                                      onChange={e => updateQuestionOption(qi, oi, "label", e.target.value)}
+                                      className="hatch-input text-xs flex-1"
+                                      placeholder="Option label"
+                                    />
+                                    <input
+                                      value={opt.value}
+                                      onChange={e => updateQuestionOption(qi, oi, "value", e.target.value)}
+                                      className="hatch-input text-xs w-24 font-mono"
+                                      placeholder="slug"
+                                    />
+                                    {q.options.length > 2 && (
+                                      <button
+                                        onClick={() => {
+                                          setQuiz(prev => {
+                                            const qs = [...prev.questions]
+                                            qs[qi] = { ...qs[qi], options: qs[qi].options.filter((_, idx) => idx !== oi) }
+                                            return { ...prev, questions: qs }
+                                          })
+                                        }}
+                                        className="text-[#52525B] hover:text-red-400 transition-colors px-1"
+                                      >
+                                        <Trash2 className="w-3 h-3" />
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
+                                {q.options.length < 4 && (
+                                  <button
+                                    onClick={() => {
+                                      setQuiz(prev => {
+                                        const qs = [...prev.questions]
+                                        const newOpt = { value: `opt_${qs[qi].options.length}`, label: "New option" }
+                                        qs[qi] = { ...qs[qi], options: [...qs[qi].options, newOpt] }
+                                        return { ...prev, questions: qs }
+                                      })
+                                    }}
+                                    className="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition-colors"
+                                  >
+                                    <Plus className="w-2.5 h-2.5" /> Add option
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Completion message */}
+                  <div>
+                    <label className="text-xs text-[#71717A] mb-1.5 block font-medium">Completion message</label>
+                    <input
+                      value={quiz.completion_message}
+                      onChange={e => setQuiz(q => ({ ...q, completion_message: e.target.value }))}
+                      className="hatch-input text-sm"
+                      placeholder="Great — finding your perfect plan…"
+                    />
+                    <p className="text-[10px] text-[#52525B] mt-1">Shown for ~1s while the paywall loads after quiz completion.</p>
+                  </div>
+                </>
+              )}
+
+              {/* Save button */}
+              <button
+                onClick={saveQuiz}
+                disabled={savingQuiz}
+                className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg bg-white/5 border border-white/10 text-[#A1A1AA] hover:text-white text-xs font-medium transition-all disabled:opacity-50"
+              >
+                {savingQuiz ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                {savingQuiz ? "Saving…" : "Save quiz"}
+              </button>
+            </div>
+          )}
+
+          {/* ── TRIGGERS TAB ───────────────────────────────────────── */}
+          {activeTab === 4 && (
             <div className="space-y-4">
               <p className="text-xs text-[#71717A]">Configure when this paywall appears automatically.</p>
 
@@ -954,7 +1257,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
           )}
 
           {/* ── LANGUAGES TAB ──────────────────────────────────────── */}
-          {activeTab === 4 && (
+          {activeTab === 5 && (
             <div className="space-y-4">
               <div className="flex items-center gap-1.5 mb-1">
                 <Globe className="w-3.5 h-3.5 text-indigo-400" />
@@ -1049,7 +1352,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
           )}
 
           {/* ── ADVANCED TAB ───────────────────────────────────────── */}
-          {activeTab === 5 && (
+          {activeTab === 6 && (
             <div className="space-y-4">
               <div className="flex items-center gap-1.5 mb-1">
                 <Code2 className="w-3.5 h-3.5 text-indigo-400" />
@@ -1098,7 +1401,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
           )}
 
           {/* ── AI OPTIMIZER TAB ───────────────────────────────────── */}
-          {activeTab === 6 && (
+          {activeTab === 7 && (
             <div className="space-y-5">
               {/* Action buttons */}
               <div className="flex gap-2">

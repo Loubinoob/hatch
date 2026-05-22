@@ -42,13 +42,12 @@ export async function POST(request: NextRequest) {
 
   // ─── paywall_shown ────────────────────────────────────────────────────────
   if (event === "paywall_shown" && paywallId) {
-    // Update paywall-level view counter
     const { data: pw } = await supabase.from("paywalls").select("views").eq("id", paywallId).single()
     if (pw) await supabase.from("paywalls").update({ views: (pw.views ?? 0) + 1 }).eq("id", paywallId)
 
-    // Update variant posterior — a view is a "miss" (beta += 1)
     const resolvedVariantId = variantId ?? await lookupVariantId(supabase, paywallId, sessionId)
     if (resolvedVariantId) {
+      // Global posterior: view is a "miss" (beta += 1)
       const { data: v } = await supabase
         .from("paywall_variants")
         .select("views, posterior_beta")
@@ -60,6 +59,24 @@ export async function POST(request: NextRequest) {
           posterior_beta: (v.posterior_beta ?? 1) + 1,
         }).eq("id", resolvedVariantId)
       }
+
+      // Segment-level posterior update
+      const segmentHash = await lookupSegmentHash(supabase, paywallId, sessionId)
+      if (segmentHash) {
+        const { data: sp } = await supabase
+          .from("variant_segment_posteriors")
+          .select("alpha, beta, views")
+          .eq("variant_id", resolvedVariantId)
+          .eq("segment_hash", segmentHash)
+          .maybeSingle()
+        if (sp) {
+          await supabase
+            .from("variant_segment_posteriors")
+            .update({ views: (sp.views ?? 0) + 1, beta: (sp.beta ?? 1) + 1, updated_at: new Date().toISOString() })
+            .eq("variant_id", resolvedVariantId)
+            .eq("segment_hash", segmentHash)
+        }
+      }
     }
   }
 
@@ -67,6 +84,7 @@ export async function POST(request: NextRequest) {
   if (event === "payment_success" && paywallId) {
     const resolvedVariantId = variantId ?? await lookupVariantId(supabase, paywallId, sessionId)
     if (resolvedVariantId) {
+      // Global posterior: conversion (alpha += 1, rebalance beta)
       const { data: v } = await supabase
         .from("paywall_variants")
         .select("conversions, posterior_alpha, posterior_beta")
@@ -76,12 +94,35 @@ export async function POST(request: NextRequest) {
         await supabase.from("paywall_variants").update({
           conversions: (v.conversions ?? 0) + 1,
           posterior_alpha: (v.posterior_alpha ?? 1) + 1,
-          // Rebalance: this view converted, so undo the beta++ from paywall_shown
           posterior_beta: Math.max(1, (v.posterior_beta ?? 2) - 1),
         }).eq("id", resolvedVariantId)
       }
+
+      // Segment-level conversion
+      const segmentHash = await lookupSegmentHash(supabase, paywallId, sessionId)
+      if (segmentHash) {
+        const { data: sp } = await supabase
+          .from("variant_segment_posteriors")
+          .select("alpha, beta, conversions")
+          .eq("variant_id", resolvedVariantId)
+          .eq("segment_hash", segmentHash)
+          .maybeSingle()
+        if (sp) {
+          await supabase
+            .from("variant_segment_posteriors")
+            .update({
+              conversions: (sp.conversions ?? 0) + 1,
+              alpha: (sp.alpha ?? 1) + 1,
+              beta: Math.max(1, (sp.beta ?? 2) - 1),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("variant_id", resolvedVariantId)
+            .eq("segment_hash", segmentHash)
+        }
+      }
     }
-    // Mark the assignment as converted
+
+    // Mark assignment as converted
     if (sessionId && paywallId) {
       await supabase.from("variant_assignments")
         .update({ converted_at: new Date().toISOString() })
@@ -108,6 +149,22 @@ async function lookupVariantId(
     .eq("session_id", sessionId)
     .maybeSingle()
   return data?.variant_id ?? null
+}
+
+async function lookupSegmentHash(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  paywallId: string,
+  sessionId: string | null
+): Promise<string | null> {
+  if (!sessionId) return null
+  const { data } = await supabase
+    .from("variant_assignments")
+    .select("segment_hash")
+    .eq("paywall_id", paywallId)
+    .eq("session_id", sessionId)
+    .maybeSingle()
+  return data?.segment_hash ?? null
 }
 
 export async function OPTIONS() {

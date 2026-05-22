@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation"
 import { motion } from "framer-motion"
 import {
   LayoutDashboard, CreditCard, Layers, Users, BarChart2,
-  Settings, Mail, LogOut, Zap, ChevronRight, BookOpen
+  Settings, Mail, LogOut, Zap, ChevronRight, BookOpen, Brain
 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
@@ -18,6 +18,7 @@ const NAV = [
   { href: "/customers", label: "Customers", icon: Users },
   { href: "/analytics", label: "Analytics", icon: BarChart2 },
   { href: "/recovery", label: "Recovery", icon: Mail, comingSoon: true },
+  { href: "/agent", label: "AI Agent", icon: Brain },
 ] as const
 
 export default function Sidebar({ appName }: { appName?: string }) {
