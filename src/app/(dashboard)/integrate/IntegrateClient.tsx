@@ -326,27 +326,21 @@ export default function IntegrateClient({ apiKey, sdkScriptUrl, paywalls, lastHe
                     ))}
                   </select>
                   {/* Draft paywalls not shown — explain why */}
-                  {paywalls.some(p => p.status !== "live") && (
-                    <div className="mt-2 flex items-start gap-2 text-[11px] text-[#52525B]">
+                  {paywalls.filter(p => p.status !== "live").map(p => (
+                    <div key={p.id} className="mt-2 flex items-start gap-2 text-[11px] text-[#52525B]">
                       <AlertTriangle className="w-3 h-3 mt-0.5 text-amber-500/70 flex-shrink-0" />
                       <span>
-                        Draft paywalls are hidden — they won&apos;t appear in your app.{" "}
-                        {paywalls
-                          .filter(p => p.status !== "live")
-                          .map(p => (
-                            <button
-                              key={p.id}
-                              onClick={() => publishPaywall(p.id)}
-                              disabled={publishing}
-                              className="text-indigo-400 hover:underline disabled:opacity-50"
-                            >
-                              Publish &ldquo;{p.name}&rdquo;
-                            </button>
-                          ))
-                          .reduce<React.ReactNode[]>((acc, el, i) => i === 0 ? [el] : [...acc, ", ", el], [])}
+                        &ldquo;{p.name}&rdquo; is a draft — drafts don&apos;t show in your app.{" "}
+                        <button
+                          onClick={() => publishPaywall(p.id)}
+                          disabled={publishing}
+                          className="text-indigo-400 hover:underline disabled:opacity-50"
+                        >
+                          Publish it now
+                        </button>
                       </span>
                     </div>
-                  )}
+                  ))}
                 </div>
               )}
 
