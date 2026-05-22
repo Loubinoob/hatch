@@ -10,6 +10,7 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { toast } from "sonner"
+import { getSdkScriptUrl } from "@/lib/sdk-url"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -105,8 +106,7 @@ export default function IntegratePage({ params }: { params: Promise<{ id: string
   const [events, setEvents] = useState<SdkEvent[]>([])
   const [loadingEvents, setLoadingEvents] = useState(false)
 
-  const sdkUrl = typeof window !== "undefined" ? window.location.origin + "/sdk/sdk.js" : "/sdk/sdk.js"
-  const scriptSnippet = `<script async src="${sdkUrl}" data-key="${apiKey || "pk_live_..."}"></script>`
+  const scriptSnippet = `<script async src="${getSdkScriptUrl()}" data-key="${apiKey || "pk_live_..."}"></script>`
 
   useEffect(() => { loadData() }, [paywallId])
 

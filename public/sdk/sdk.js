@@ -919,10 +919,15 @@
 
   function init(apiKey) {
     if (state.initialized) return
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.length < 8) {
+      console.warn('[Hatch] init() called with an invalid or missing API key. Check your data-key attribute.')
+      return
+    }
     state.apiKey = apiKey
     state.sessionId = getSession().id
     var storedUser = getStoredUser()
     if (storedUser) { state.userId = storedUser.id; state.userTraits = storedUser.traits || {} }
+    console.log('[Hatch] SDK loaded — API base:', API_BASE, '| key:', apiKey.slice(0, 8) + '...')
     injectStyles()
     track('page_view', { url: window.location.href })
     if (window.location.search.includes('hatch_success=1')) fetchSubscription()
@@ -956,8 +961,14 @@
   }
 
   async function show(paywallId) {
-    if (!state.apiKey) { console.warn('[Hatch] Not initialized'); return }
+    if (!state.apiKey) { console.warn('[Hatch] Not initialized — call hatch.init() or set data-key on the script tag'); return }
     if (state.activePaywall || state.activeQuiz) return
+
+    // Skip if user already has an active subscription
+    if (state.subscription && state.subscription.status === 'active') {
+      console.log('[Hatch] User already subscribed — paywall skipped')
+      return
+    }
 
     var url = API_BASE + '/sdk/config?key=' + state.apiKey +
       (paywallId ? '&paywall=' + paywallId : '') +
@@ -966,9 +977,19 @@
 
     try {
       var res = await fetch(url)
+      if (!res.ok) {
+        console.error('[Hatch] Cannot reach Hatch API at', API_BASE, '— HTTP', res.status, '(possible CORS or network issue)')
+        return
+      }
       var data = await res.json()
       var config = data.paywall || (data.paywalls && data.paywalls[0])
-      if (!config) { console.warn('[Hatch] No live paywall found. Create or publish one at ' + API_BASE.replace('/api', '') + '/paywalls'); return }
+      if (!config) {
+        var hint = paywallId
+          ? 'Paywall "' + paywallId + '" not found or not published — is it Live in the Hatch dashboard?'
+          : 'No live paywalls found for this account — publish one at ' + API_BASE.replace('/api', '') + '/paywalls'
+        console.warn('[Hatch]', hint)
+        return
+      }
 
       if (config._variant_id) state.variantId = config._variant_id
 
@@ -993,7 +1014,11 @@
         renderPaywall(localizedConfig, plans)
       }
     } catch (e) {
-      console.error('[Hatch] Failed to load paywall:', e)
+      if (e instanceof TypeError && String(e).toLowerCase().includes('fetch')) {
+        console.error('[Hatch] Network error — cannot reach Hatch API at', API_BASE, '. Check CORS or your network.', e)
+      } else {
+        console.error('[Hatch] Failed to load paywall:', e)
+      }
     }
   }
 

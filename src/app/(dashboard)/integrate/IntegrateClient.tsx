@@ -2,7 +2,7 @@
 
 import { useState, useMemo, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Copy, Check, Zap, Terminal, ChevronDown, ChevronUp, ExternalLink, Wifi, WifiOff, Code2, MessageSquare } from "lucide-react"
+import { Copy, Check, Zap, Terminal, ChevronDown, ChevronUp, ExternalLink, Wifi, WifiOff, Code2, MessageSquare, AlertTriangle } from "lucide-react"
 import { toast } from "sonner"
 import { createClient } from "@/lib/supabase/client"
 
@@ -12,7 +12,7 @@ type Paywall = { id: string; name: string; status: string }
 
 type Props = {
   apiKey: string
-  appUrl: string
+  sdkScriptUrl: string
   paywalls: Paywall[]
   lastHeartbeat: string | null
 }
@@ -50,9 +50,9 @@ const PLATFORMS: { id: Platform; label: string; emoji: string; scriptInstruction
 
 // ─── Prompt builder ───────────────────────────────────────────────────────────
 
-function buildPrompt(apiKey: string, appUrl: string, paywall: Paywall | null, platform: Platform): string {
+function buildPrompt(sdkScriptUrl: string, apiKey: string, paywall: Paywall | null, platform: Platform): string {
   const p = PLATFORMS.find(x => x.id === platform)!
-  const scriptTag = `<script async src="${appUrl}/sdk/sdk.js" data-key="${apiKey}"></script>`
+  const scriptTag = `<script async src="${sdkScriptUrl}" data-key="${apiKey}"></script>`
   const paywallLine = paywall
     ? `hatch.show('${paywall.id}')`
     : `hatch.show('YOUR_PAYWALL_ID') // replace with your paywall ID from hatch dashboard`
@@ -140,12 +140,14 @@ function ManualSection({ title, desc, code, lang }: { title: string; desc: strin
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbeat }: Props) {
+export default function IntegrateClient({ apiKey, sdkScriptUrl, paywalls, lastHeartbeat }: Props) {
   const [tab, setTab] = useState<"ai" | "manual">("ai")
   const [platform, setPlatform] = useState<Platform>("lovable")
-  const [selectedId, setSelectedId] = useState<string>(
-    paywalls.find(p => p.status === "live")?.id ?? paywalls[0]?.id ?? ""
-  )
+
+  // Only show live paywalls in the dropdown
+  const livePaywalls = paywalls.filter(p => p.status === "live")
+  const [selectedId, setSelectedId] = useState<string>(livePaywalls[0]?.id ?? "")
+  const [publishing, setPublishing] = useState(false)
   const [copying, setCopying] = useState(false)
   const [sdkLive, setSdkLive] = useState(() => {
     if (!lastHeartbeat) return false
@@ -169,11 +171,26 @@ export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbea
     return () => clearInterval(interval)
   }, [])
 
-  const selectedPaywall = paywalls.find(p => p.id === selectedId) ?? null
+  const selectedPaywall = livePaywalls.find(p => p.id === selectedId) ?? null
   const prompt = useMemo(
-    () => buildPrompt(apiKey, appUrl, selectedPaywall, platform),
-    [apiKey, appUrl, selectedPaywall, platform]
+    () => buildPrompt(sdkScriptUrl, apiKey, selectedPaywall, platform),
+    [sdkScriptUrl, apiKey, selectedPaywall, platform]
   )
+
+  async function publishPaywall(paywallId: string) {
+    setPublishing(true)
+    const supabase = createClient()
+    const { error } = await supabase.from("paywalls").update({ status: "live" }).eq("id", paywallId)
+    if (error) {
+      toast.error("Failed to publish paywall")
+    } else {
+      toast.success("Paywall published! 🎉")
+      // Refresh — move it to selectedId
+      setSelectedId(paywallId)
+      window.location.reload()
+    }
+    setPublishing(false)
+  }
 
   function copyPrompt() {
     navigator.clipboard.writeText(prompt).then(() => {
@@ -183,12 +200,17 @@ export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbea
     })
   }
 
-  const scriptTag = `<script async src="${appUrl}/sdk/sdk.js"\n  data-key="${apiKey}"></script>`
+  const scriptSnippet = `<script async src="${sdkScriptUrl}"\n  data-key="${apiKey}"></script>`
   const identifySnippet = `// Call this right after the user logs in:\nhatch.identify(user.id, { email: user.email })`
   const showSnippet = selectedPaywall
     ? `// On your upgrade / premium CTA button:\nhatch.show('${selectedPaywall.id}')`
-    : `// On your upgrade / premium CTA button:\nhatch.show('YOUR_PAYWALL_ID')`
+    : livePaywalls.length === 0
+      ? `// Publish a paywall first, then come back here for your ID`
+      : `// On your upgrade / premium CTA button:\nhatch.show('YOUR_PAYWALL_ID')`
   const debugSnippet = `// In your browser console to check SDK status:\nhatch.debug()`
+
+  // Warning: no live paywalls
+  const noLivePaywalls = livePaywalls.length === 0
 
   return (
     <div className="min-h-screen bg-[#0A0A0B] text-white">
@@ -243,11 +265,11 @@ export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbea
               {/* 3-step visual */}
               <div className="grid grid-cols-3 gap-3">
                 {[
-                  { n: "1", emoji: "📋", title: "Copy the message", sub: "Pre-filled with your keys" },
-                  { n: "2", emoji: "💬", title: "Open your AI builder", sub: "Lovable, Bolt, Cursor…" },
-                  { n: "3", emoji: "✅", title: "Paste & send", sub: "Your AI handles the rest" },
+                  { emoji: "📋", title: "Copy the message", sub: "Pre-filled with your keys" },
+                  { emoji: "💬", title: "Open your AI builder", sub: "Lovable, Bolt, Cursor…" },
+                  { emoji: "✅", title: "Paste & send", sub: "Your AI handles the rest" },
                 ].map(s => (
-                  <div key={s.n} className="bg-white/3 border border-white/6 rounded-xl p-4 text-center">
+                  <div key={s.title} className="bg-white/3 border border-white/6 rounded-xl p-4 text-center">
                     <div className="text-2xl mb-2">{s.emoji}</div>
                     <p className="text-xs font-semibold text-white mb-0.5">{s.title}</p>
                     <p className="text-[11px] text-[#52525B]">{s.sub}</p>
@@ -276,15 +298,16 @@ export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbea
                 </div>
               </div>
 
-              {/* Paywall selector */}
-              {paywalls.length === 0 ? (
+              {/* Paywall selector — live only */}
+              {noLivePaywalls ? (
                 <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4 flex items-center gap-3">
-                  <span className="text-2xl">⚠️</span>
+                  <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0" />
                   <div>
-                    <p className="text-sm font-medium text-amber-300">No paywalls yet</p>
+                    <p className="text-sm font-medium text-amber-300">No live paywall yet</p>
                     <p className="text-xs text-[#71717A] mt-0.5">
-                      <a href="/paywalls" className="text-indigo-400 hover:underline">Create a paywall first</a>
-                      {" "}— then come back here to get your install message.
+                      You need to{" "}
+                      <a href="/paywalls" className="text-indigo-400 hover:underline">create and publish a paywall</a>
+                      {" "}before integrating — drafts won&apos;t show in your app.
                     </p>
                   </div>
                 </div>
@@ -296,12 +319,34 @@ export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbea
                     onChange={e => setSelectedId(e.target.value)}
                     className="w-full bg-[#111114] border border-white/6 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500/50 transition-colors"
                   >
-                    {paywalls.map(p => (
+                    {livePaywalls.map(p => (
                       <option key={p.id} value={p.id}>
-                        {p.name} {p.status === "live" ? "✓" : "(draft)"}
+                        {p.name} ✓ live
                       </option>
                     ))}
                   </select>
+                  {/* Draft paywalls not shown — explain why */}
+                  {paywalls.some(p => p.status !== "live") && (
+                    <div className="mt-2 flex items-start gap-2 text-[11px] text-[#52525B]">
+                      <AlertTriangle className="w-3 h-3 mt-0.5 text-amber-500/70 flex-shrink-0" />
+                      <span>
+                        Draft paywalls are hidden — they won&apos;t appear in your app.{" "}
+                        {paywalls
+                          .filter(p => p.status !== "live")
+                          .map(p => (
+                            <button
+                              key={p.id}
+                              onClick={() => publishPaywall(p.id)}
+                              disabled={publishing}
+                              className="text-indigo-400 hover:underline disabled:opacity-50"
+                            >
+                              Publish &ldquo;{p.name}&rdquo;
+                            </button>
+                          ))
+                          .reduce<React.ReactNode[]>((acc, el, i) => i === 0 ? [el] : [...acc, ", ", el], [])}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -322,11 +367,13 @@ export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbea
               {/* Copy button */}
               <button
                 onClick={copyPrompt}
-                disabled={paywalls.length === 0}
+                disabled={noLivePaywalls}
                 className={`w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-semibold text-sm transition-all ${
                   copying
                     ? "bg-emerald-600 text-white"
-                    : "bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                    : noLivePaywalls
+                      ? "bg-white/5 text-[#52525B] cursor-not-allowed"
+                      : "bg-indigo-600 hover:bg-indigo-500 text-white"
                 }`}
               >
                 {copying ? (
@@ -361,7 +408,7 @@ export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbea
                 )}
               </div>
 
-              {/* Lovable quick link */}
+              {/* Lovable quick tip */}
               {platform === "lovable" && (
                 <div className="flex items-start gap-3 bg-white/3 border border-white/6 rounded-xl p-4">
                   <span className="text-lg mt-0.5">💡</span>
@@ -390,7 +437,7 @@ export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbea
               <ManualSection
                 title="1. Load the SDK"
                 desc="Paste once in your app's <head>"
-                code={scriptTag}
+                code={scriptSnippet}
                 lang="html"
               />
 
@@ -409,7 +456,7 @@ export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbea
               />
 
               {/* Paywall selector for manual */}
-              {paywalls.length > 0 && (
+              {livePaywalls.length > 0 && (
                 <div className="pt-2">
                   <p className="text-xs text-[#71717A] mb-2">Change target paywall:</p>
                   <select
@@ -417,12 +464,25 @@ export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbea
                     onChange={e => setSelectedId(e.target.value)}
                     className="w-full bg-[#111114] border border-white/6 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500/50 transition-colors"
                   >
-                    {paywalls.map(p => (
+                    {livePaywalls.map(p => (
                       <option key={p.id} value={p.id}>
-                        {p.name} {p.status === "live" ? "✓" : "(draft)"}
+                        {p.name} ✓ live
                       </option>
                     ))}
                   </select>
+                </div>
+              )}
+
+              {noLivePaywalls && (
+                <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4 flex items-center gap-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium text-amber-300">No live paywall yet</p>
+                    <p className="text-xs text-[#71717A] mt-0.5">
+                      <a href="/paywalls" className="text-indigo-400 hover:underline">Publish a paywall first</a>
+                      {" "}— then the paywall ID will appear in the snippet above.
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -457,7 +517,6 @@ export default function IntegrateClient({ apiKey, appUrl, paywalls, lastHeartbea
                 )}
               </div>
 
-              {/* Docs link */}
               <a
                 href="https://github.com/Loubinoob/hatch"
                 target="_blank"

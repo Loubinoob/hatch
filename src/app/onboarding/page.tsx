@@ -7,6 +7,7 @@ import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
 import { Check, Copy, Loader2, Plus, Trash2, ExternalLink, Zap, Sparkles } from "lucide-react"
 import { generateApiKey } from "@/lib/utils"
+import { getSdkScriptUrl } from "@/lib/sdk-url"
 
 const PLATFORMS = [
   { value: "lovable", label: "Lovable" },
@@ -188,8 +189,7 @@ export default function OnboardingPage() {
   }
 
   function copySnippet() {
-    const sdkUrl = window.location.origin + "/sdk/sdk.js"
-    const snippet = `<script async src="${sdkUrl}" data-key="${apiKey}"></script>`
+    const snippet = `<script async src="${getSdkScriptUrl()}" data-key="${apiKey}"></script>`
     navigator.clipboard.writeText(snippet)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
@@ -200,10 +200,10 @@ export default function OnboardingPage() {
     toast.success("SDK detected! You're all set.")
   }
 
-  const sdkOrigin = typeof window !== "undefined" ? window.location.origin : ""
-  const snippetHtml = `<script async src="${sdkOrigin}/sdk/sdk.js" data-key="${apiKey}"></script>`
-  const snippetReact = `// React / Next.js — add to your root layout <head>:\n<script async src="${sdkOrigin}/sdk/sdk.js" data-key="${apiKey}"></script>\n\n// (A dedicated npm package is coming soon.)`
-  const snippetLovable = `// In Lovable, go to Settings → Custom Scripts and paste:\n<script async src="${sdkOrigin}/sdk/sdk.js" data-key="${apiKey}"></script>`
+  const sdkUrl = getSdkScriptUrl()
+  const snippetHtml = `<script async src="${sdkUrl}" data-key="${apiKey}"></script>`
+  const snippetReact = `// React / Next.js — add to your root layout <head>:\n<script async src="${sdkUrl}" data-key="${apiKey}"></script>\n\n// (A dedicated npm package is coming soon.)`
+  const snippetLovable = `// In Lovable, go to Settings → Custom Scripts and paste:\n<script async src="${sdkUrl}" data-key="${apiKey}"></script>`
 
   return (
     <div className="min-h-screen bg-[#0A0A0B] flex flex-col items-center justify-center p-4">

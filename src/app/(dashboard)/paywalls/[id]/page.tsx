@@ -11,6 +11,7 @@ import {
 import Link from "next/link"
 import { toast } from "sonner"
 import PaywallPreview from "@/components/paywall/PaywallPreview"
+import { getSdkScriptUrl } from "@/lib/sdk-url"
 
 type PaywallConfig = {
   id: string
@@ -473,8 +474,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   }
 
   function copyInstallSnippet() {
-    const sdkUrl = window.location.origin + "/sdk/sdk.js"
-    const snippet = `<script async src="${sdkUrl}" data-key="${apiKey}"></script>`
+    const snippet = `<script async src="${getSdkScriptUrl()}" data-key="${apiKey}"></script>`
     navigator.clipboard.writeText(snippet)
     setSnippetCopied(true)
     setTimeout(() => setSnippetCopied(false), 2000)
@@ -1712,7 +1712,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
           <h3 className="text-xs font-semibold text-[#71717A] mb-3 uppercase tracking-wide">Install Snippet</h3>
           <div className="relative bg-[#0A0A0B] border border-white/6 rounded-lg p-2.5 mb-2">
             <code className="text-[10px] text-indigo-300 font-mono break-all leading-relaxed block pr-6">
-              {`<script async\n  src="${typeof window !== 'undefined' ? window.location.origin : ''}/sdk/sdk.js"\n  data-key="${apiKey || "pk_…"}"\n></script>`}
+              {`<script async\n  src="${getSdkScriptUrl()}"\n  data-key="${apiKey || "pk_…"}"\n></script>`}
             </code>
             <button onClick={copyInstallSnippet} className="absolute top-2 right-2 p-1 bg-white/5 hover:bg-white/10 rounded border border-white/10 transition-colors" title="Copy snippet">
               {snippetCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-[#71717A]" />}

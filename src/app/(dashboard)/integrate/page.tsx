@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { getSdkScriptUrl } from "@/lib/sdk-url"
 import IntegrateClient from "./IntegrateClient"
 
 export default async function IntegratePage() {
@@ -21,14 +22,12 @@ export default async function IntegratePage() {
     service.from("paywalls").select("id, name, status").eq("account_id", accountId).order("created_at", { ascending: false }),
   ])
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? (
-    typeof window !== "undefined" ? window.location.origin : "https://hatch-five-gamma.vercel.app"
-  )
+  const sdkScriptUrl = getSdkScriptUrl()
 
   return (
     <IntegrateClient
       apiKey={account?.api_key ?? "pk_live_..."}
-      appUrl={appUrl}
+      sdkScriptUrl={sdkScriptUrl}
       paywalls={paywalls ?? []}
       lastHeartbeat={account?.last_heartbeat_at ?? null}
     />

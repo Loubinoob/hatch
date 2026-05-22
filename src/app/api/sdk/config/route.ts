@@ -99,7 +99,17 @@ export async function GET(request: NextRequest) {
         .maybeSingle(),
     ])
 
-    if (!paywall) return NextResponse.json({ paywall: null }, { headers: CORS_HEADERS })
+    if (!paywall) {
+      // Check if it exists but is not live (draft/archived) to give a clearer SDK log
+      const { data: draft } = await supabase
+        .from("paywalls")
+        .select("id, status")
+        .eq("id", paywallId)
+        .eq("account_id", user.account_id)
+        .single()
+      const reason = draft ? `not_live (status: ${draft.status})` : "not_found"
+      return NextResponse.json({ paywall: null, reason }, { headers: CORS_HEADERS })
+    }
 
     const enriched = await applyVariantContextual(supabase, paywall, sessionId, user.account_id, segmentHash, segmentFeatures)
     return NextResponse.json(
