@@ -968,7 +968,7 @@
       var res = await fetch(url)
       var data = await res.json()
       var config = data.paywall || (data.paywalls && data.paywalls[0])
-      if (!config) { console.warn('[Hatch] No live paywall found'); return }
+      if (!config) { console.warn('[Hatch] No live paywall found. Create or publish one at ' + API_BASE.replace('/api', '') + '/paywalls'); return }
 
       if (config._variant_id) state.variantId = config._variant_id
 
@@ -1042,6 +1042,40 @@
 
   function hide() { closePaywall() }
 
+  function reset() {
+    state.userId = null
+    state.userTraits = {}
+    state.subscription = null
+    try { localStorage.removeItem(USER_KEY) } catch (e) {}
+  }
+
+  async function isSubscribed() {
+    var sub = await getSubscription()
+    return !!(sub && sub.status === 'active')
+  }
+
+  function debug() {
+    console.group('[Hatch Debug]')
+    console.log('SDK version : 3.1.0')
+    console.log('API Base    :', API_BASE)
+    console.log('API Key     :', state.apiKey ? state.apiKey.slice(0, 8) + '...' : 'NOT SET')
+    console.log('Initialized :', state.initialized)
+    console.log('Session     :', state.sessionId)
+    console.log('User ID     :', state.userId || '(none)')
+    console.log('User traits :', state.userTraits)
+    console.log('Active paywall:', state.activePaywall ? 'yes' : 'none')
+    console.log('Active quiz :', state.activeQuiz ? 'yes' : 'none')
+    console.groupEnd()
+    return {
+      version: '3.1.0',
+      apiBase: API_BASE,
+      apiKey: state.apiKey,
+      initialized: state.initialized,
+      sessionId: state.sessionId,
+      userId: state.userId,
+    }
+  }
+
   async function getSubscription() {
     if (state.subscription) return state.subscription
     return fetchSubscription()
@@ -1079,5 +1113,20 @@
     }
   }
 
-  return { init: init, identify: identify, track: track, show: show, hide: hide, getSubscription: getSubscription }
+  var api = {
+    init: init,
+    identify: identify,
+    track: track,
+    show: show,
+    hide: hide,
+    reset: reset,
+    isSubscribed: isSubscribed,
+    getSubscription: getSubscription,
+    debug: debug,
+  }
+
+  // Expose a sentinel on window so integration tools can detect SDK presence
+  try { window.__hatch = { ready: true, version: '3.1.0' } } catch (e) {}
+
+  return api
 })

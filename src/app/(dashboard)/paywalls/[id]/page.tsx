@@ -527,6 +527,13 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
           }`}>
             {form.status}
           </span>
+          <Link
+            href={`/paywalls/${paywall.id}/integrate`}
+            className="flex items-center gap-1 text-[11px] font-medium text-indigo-400 hover:text-indigo-300 transition-colors bg-indigo-500/10 hover:bg-indigo-500/15 px-2 py-1 rounded"
+          >
+            <Zap className="w-3 h-3" />
+            Integrate
+          </Link>
         </div>
 
         {/* Tabs — scrollable */}
