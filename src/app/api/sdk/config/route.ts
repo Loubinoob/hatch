@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createServiceClient } from "@supabase/supabase-js"
 import { computeSegmentHash, bucketUtm, bucketHour } from "@/lib/segment"
+import { withDefaults } from "@/lib/paywall-resilience"
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -111,7 +112,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ paywall: null, reason }, { headers: CORS_HEADERS })
     }
 
-    const enriched = await applyVariantContextual(supabase, paywall, sessionId, user.account_id, segmentHash, segmentFeatures)
+    const enriched = await applyVariantContextual(supabase, withDefaults(paywall), sessionId, user.account_id, segmentHash, segmentFeatures)
     return NextResponse.json(
       {
         paywall: enriched,
@@ -136,8 +137,10 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  const enrichedFirst = await applyVariantContextual(supabase, paywalls[0], sessionId, user.account_id, segmentHash, segmentFeatures)
-  const result = [enrichedFirst, ...paywalls.slice(1)]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const enrichedFirst = await applyVariantContextual(supabase, withDefaults(paywalls[0] as any), sessionId, user.account_id, segmentHash, segmentFeatures)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result = [enrichedFirst, ...(paywalls.slice(1) as any[]).map(p => withDefaults(p))]
   return NextResponse.json(
     { paywalls: result, segment_hash: segmentHash },
     { headers: { ...CORS_HEADERS, "Cache-Control": "no-store" } }

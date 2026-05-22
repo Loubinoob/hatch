@@ -12,6 +12,7 @@ import Link from "next/link"
 import { toast } from "sonner"
 import PaywallPreview from "@/components/paywall/PaywallPreview"
 import { getSdkScriptUrl } from "@/lib/sdk-url"
+import { withDefaults, savePaywallResilient } from "@/lib/paywall-resilience"
 
 type PaywallConfig = {
   id: string
@@ -224,12 +225,12 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
       supabase.from("stripe_connections").select("id").eq("account_id", profile?.account_id ?? "").maybeSingle(),
     ])
     setPaywall(pw)
-    setForm({
+    setForm(withDefaults({
       ...pw,
       trigger_config: pw?.trigger_config ?? DEFAULT_TRIGGER_CONFIG,
       trust_badges: pw?.trust_badges ?? [],
       localizations: pw?.localizations ?? {},
-    })
+    }) as Partial<PaywallConfig>)
     setPlans(p ?? [])
     setBriefCompleted(!!brief?.completed_at)
     setApiKey(profile ? (await supabase.from("users").select("api_key").eq("id", user.id).single()).data?.api_key ?? "" : "")
@@ -440,8 +441,14 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
 
   async function handleSave() {
     setSaving(true)
-    const { error } = await supabase.from("paywalls").update({ ...form, updated_at: new Date().toISOString() }).eq("id", id)
-    if (error) { toast.error(error.message); setSaving(false); return }
+    const payload = { ...form, updated_at: new Date().toISOString() }
+    const result = await savePaywallResilient(supabase, id, payload as Record<string, unknown>)
+
+    if (result.error) {
+      toast.error(result.error.message)
+      setSaving(false)
+      return
+    }
 
     // Keep control variant in sync with paywall edits
     await supabase.from("paywall_variants").update({
@@ -451,7 +458,11 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
       accent_color: (form.design as Record<string, string>)?.accentColor ?? "#6366F1",
     }).eq("paywall_id", id).eq("is_control", true)
 
-    toast.success("Saved")
+    if (result.droppedFields.length > 0) {
+      toast.success(`Saved — some display settings used defaults (${result.droppedFields.join(", ")})`)
+    } else {
+      toast.success("Saved")
+    }
     setSaving(false)
   }
 
@@ -496,9 +507,21 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   async function handlePublish() {
     setPublishing(true)
     const newStatus = form.status === "live" ? "draft" : "live"
-    const { error } = await supabase.from("paywalls").update({ ...form, status: newStatus, updated_at: new Date().toISOString() }).eq("id", id)
-    if (error) { toast.error(error.message) } else {
-      toast.success(newStatus === "live" ? "Paywall published!" : "Paywall unpublished")
+    const payload = { ...form, status: newStatus, updated_at: new Date().toISOString() }
+    const result = await savePaywallResilient(supabase, id, payload as Record<string, unknown>)
+
+    if (result.error) {
+      toast.error(result.error.message)
+    } else {
+      if (result.droppedFields.length > 0) {
+        toast.success(
+          newStatus === "live"
+            ? `Published ✓ — some display settings (${result.droppedFields.join(", ")}) used defaults and can be adjusted once your database is up to date.`
+            : "Paywall unpublished"
+        )
+      } else {
+        toast.success(newStatus === "live" ? "Paywall published!" : "Paywall unpublished")
+      }
       update("status", newStatus)
     }
     setPublishing(false)
