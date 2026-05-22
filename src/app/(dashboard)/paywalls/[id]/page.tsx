@@ -217,11 +217,11 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     if (!user) return
     const { data: profile } = await supabase.from("users").select("account_id").eq("id", user.id).single()
 
-    const [{ data: pw }, { data: p }, { data: brief }, { data: acct }] = await Promise.all([
+    const [{ data: pw }, { data: p }, { data: brief }, { data: sc }] = await Promise.all([
       supabase.from("paywalls").select("*").eq("id", id).single(),
       supabase.from("plans").select("*").eq("account_id", profile?.account_id).eq("is_active", true),
       supabase.from("project_briefs").select("completed_at").eq("account_id", profile?.account_id ?? "").maybeSingle(),
-      supabase.from("accounts").select("stripe_account_id").eq("id", profile?.account_id ?? "").single(),
+      supabase.from("stripe_connections").select("id").eq("account_id", profile?.account_id ?? "").maybeSingle(),
     ])
     setPaywall(pw)
     setForm({
@@ -233,8 +233,21 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     setPlans(p ?? [])
     setBriefCompleted(!!brief?.completed_at)
     setApiKey(profile ? (await supabase.from("users").select("api_key").eq("id", user.id).single()).data?.api_key ?? "" : "")
-    setStripeConnected(!!acct?.stripe_account_id)
+    setStripeConnected(!!sc)
     setLoading(false)
+  }
+
+  async function refreshPublishStatus() {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    const { data: profile } = await supabase.from("users").select("account_id").eq("id", user.id).single()
+    if (!profile) return
+    const [{ data: sc }, { data: p }] = await Promise.all([
+      supabase.from("stripe_connections").select("id").eq("account_id", profile.account_id).maybeSingle(),
+      supabase.from("plans").select("*").eq("account_id", profile.account_id).eq("is_active", true),
+    ])
+    setStripeConnected(!!sc)
+    setPlans(p ?? [])
   }
 
   async function loadOptimizer() {
@@ -1608,13 +1621,24 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
         {/* Footer actions */}
         <div className="p-4 border-t border-white/6 space-y-2">
           {form.status !== "live" && !canPublish && (
-            <div className="flex items-start gap-1.5 bg-amber-500/5 border border-amber-500/15 rounded-lg px-2.5 py-2 mb-1">
-              <AlertCircle className="w-3 h-3 text-amber-400 mt-0.5 flex-shrink-0" />
-              <p className="text-[10px] text-amber-400 leading-relaxed">
-                {!stripeConnected && !hasSelectedPlans ? "Connect Stripe and select a plan to publish"
-                  : !stripeConnected ? "Connect Stripe to publish"
-                  : "Select at least one plan to publish"}
-              </p>
+            <div className="bg-amber-500/5 border border-amber-500/15 rounded-lg px-2.5 py-2 mb-1 space-y-1">
+              <div className="flex items-center gap-1.5">
+                <span className={`text-[10px] ${stripeConnected ? "text-emerald-400" : "text-amber-400"}`}>
+                  {stripeConnected ? "✓" : "✗"} Stripe {stripeConnected ? "connected" : "not connected"}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className={`text-[10px] ${hasSelectedPlans ? "text-emerald-400" : "text-amber-400"}`}>
+                  {hasSelectedPlans ? "✓" : "✗"} {hasSelectedPlans ? "Plan selected" : "No plan selected on this paywall"}
+                </span>
+              </div>
+              <button
+                onClick={refreshPublishStatus}
+                className="flex items-center gap-1 text-[10px] text-[#52525B] hover:text-[#A1A1AA] transition-colors mt-0.5"
+              >
+                <RefreshCw className="w-2.5 h-2.5" />
+                Refresh status
+              </button>
             </div>
           )}
           <button
