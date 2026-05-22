@@ -188,7 +188,8 @@ export default function OnboardingPage() {
   }
 
   function copySnippet() {
-    const snippet = `<script async src="https://cdn.hatch.io/v1/sdk.js" data-key="${apiKey}"></script>`
+    const sdkUrl = window.location.origin + "/sdk/sdk.js"
+    const snippet = `<script async src="${sdkUrl}" data-key="${apiKey}"></script>`
     navigator.clipboard.writeText(snippet)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
@@ -199,15 +200,10 @@ export default function OnboardingPage() {
     toast.success("SDK detected! You're all set.")
   }
 
-  const snippetHtml = `<script async src="https://cdn.hatch.io/v1/sdk.js" data-key="${apiKey}"></script>`
-  const snippetReact = `import { HatchProvider } from '@hatch/react'
-
-// Wrap your app:
-<HatchProvider apiKey="${apiKey}">
-  <App />
-</HatchProvider>`
-  const snippetLovable = `// In Lovable, go to Settings → Custom Scripts and paste:
-<script async src="https://cdn.hatch.io/v1/sdk.js" data-key="${apiKey}"></script>`
+  const sdkOrigin = typeof window !== "undefined" ? window.location.origin : ""
+  const snippetHtml = `<script async src="${sdkOrigin}/sdk/sdk.js" data-key="${apiKey}"></script>`
+  const snippetReact = `// React / Next.js — add to your root layout <head>:\n<script async src="${sdkOrigin}/sdk/sdk.js" data-key="${apiKey}"></script>\n\n// (A dedicated npm package is coming soon.)`
+  const snippetLovable = `// In Lovable, go to Settings → Custom Scripts and paste:\n<script async src="${sdkOrigin}/sdk/sdk.js" data-key="${apiKey}"></script>`
 
   return (
     <div className="min-h-screen bg-[#0A0A0B] flex flex-col items-center justify-center p-4">

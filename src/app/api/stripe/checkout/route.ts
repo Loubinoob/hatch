@@ -1,26 +1,37 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getStripe, HATCH_COMMISSION_RATE } from "@/lib/stripe"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 
 export const dynamic = "force-dynamic"
+
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+}
+
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: CORS })
+}
 
 export async function POST(request: NextRequest) {
   const stripe = getStripe()
   const { paywallId, planId, userId, email, successUrl, cancelUrl } = await request.json()
 
   if (!planId || !successUrl) {
-    return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
+    return NextResponse.json({ error: "Missing required fields" }, { status: 400, headers: CORS })
   }
 
-  // Lookup plan + stripe connection
-  const supabase = await createClient()
+  // Use service client — called from external SDK without a user session
+  const supabase = createServiceClient()
+
   const { data: plan } = await supabase
     .from("plans")
     .select("*, accounts(id)")
     .eq("id", planId)
     .single()
 
-  if (!plan) return NextResponse.json({ error: "Plan not found" }, { status: 404 })
+  if (!plan) return NextResponse.json({ error: "Plan not found" }, { status: 404, headers: CORS })
 
   const { data: conn } = await supabase
     .from("stripe_connections")
@@ -28,7 +39,7 @@ export async function POST(request: NextRequest) {
     .eq("account_id", (plan.accounts as { id: string }).id)
     .single()
 
-  if (!conn) return NextResponse.json({ error: "Stripe not connected" }, { status: 400 })
+  if (!conn) return NextResponse.json({ error: "Stripe not connected" }, { status: 400, headers: CORS })
 
   const priceId = plan.stripe_price_id_monthly
   const amount = plan.price_monthly
@@ -73,5 +84,5 @@ export async function POST(request: NextRequest) {
     { stripeAccount: conn.stripe_account_id }
   )
 
-  return NextResponse.json({ url: session.url })
+  return NextResponse.json({ url: session.url }, { headers: CORS })
 }

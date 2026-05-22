@@ -212,21 +212,16 @@ export default function SettingsPage() {
             <h2 className="text-sm font-semibold text-white mb-3">SDK Installation</h2>
             <div className="space-y-3">
               <div>
-                <p className="text-xs text-[#71717A] mb-1.5">HTML / Lovable</p>
-                <pre className="bg-[#0A0A0B] border border-white/6 rounded-lg p-3 text-xs font-mono text-[#A1A1AA] overflow-x-auto">
-{`<script async src="https://cdn.hatch.io/v1/sdk.js"
+                <p className="text-xs text-[#71717A] mb-1.5">HTML / Lovable / Bolt / Replit</p>
+                <pre className="bg-[#0A0A0B] border border-white/6 rounded-lg p-3 text-xs font-mono text-[#A1A1AA] overflow-x-auto select-all">
+{`<script async src="${typeof window !== "undefined" ? window.location.origin : ""}/sdk/sdk.js"
   data-key="${profile?.api_key ?? "pk_live_..."}"></script>`}
                 </pre>
+                <p className="text-[11px] text-[#52525B] mt-1.5">Paste once in your app&apos;s <code className="font-mono text-[#71717A]">&lt;head&gt;</code> or custom scripts block.</p>
               </div>
-              <div>
-                <p className="text-xs text-[#71717A] mb-1.5">React / Next.js</p>
-                <pre className="bg-[#0A0A0B] border border-white/6 rounded-lg p-3 text-xs font-mono text-[#A1A1AA] overflow-x-auto">
-{`import { HatchProvider } from '@hatch/react'
-
-<HatchProvider apiKey="${profile?.api_key ?? "pk_live_..."}">
-  <App />
-</HatchProvider>`}
-                </pre>
+              <div className="p-3 rounded-lg bg-white/3 border border-white/6">
+                <p className="text-xs text-[#71717A] font-medium mb-1">React / Next.js</p>
+                <p className="text-[11px] text-[#52525B]">Add the script tag above to your root layout&apos;s <code className="font-mono text-[#71717A]">&lt;head&gt;</code>. A dedicated npm package is coming soon.</p>
               </div>
             </div>
           </div>

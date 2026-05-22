@@ -1,7 +1,7 @@
 /**
- * Hatch SDK v3.0.0
- * Contextual paywall SDK — quiz, segmentation, 6 templates, auto-triggers
- * https://hatch.io
+ * Hatch SDK v3.1.0
+ * Contextual paywall SDK — quiz, segmentation, 6 templates, auto-triggers, chameleon mode
+ * Load via: <script async src="YOUR_HATCH_URL/sdk/sdk.js" data-key="pk_..."></script>
  */
 ;(function (global, factory) {
   if (typeof module !== 'undefined' && module.exports) {
@@ -11,7 +11,27 @@
   }
 })(typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : this, function () {
 
-  var API_BASE = 'https://app.hatch.io/api'
+  // Auto-detect the origin from the <script> tag that loaded this SDK.
+  // Falls back to current page origin if detection fails.
+  // This makes the SDK work on any deployment without hardcoding.
+  var API_BASE = (function () {
+    try {
+      var self = document.currentScript
+      if (!self) {
+        var scripts = document.getElementsByTagName('script')
+        for (var i = scripts.length - 1; i >= 0; i--) {
+          if (scripts[i].src && scripts[i].src.indexOf('/sdk/sdk.js') !== -1) {
+            self = scripts[i]; break
+          }
+        }
+      }
+      if (self && self.src) {
+        var u = new URL(self.src)
+        return u.origin + '/api'
+      }
+    } catch (e) {}
+    return window.location.origin + '/api'
+  })()
   var SESSION_KEY = 'hatch_session'
   var USER_KEY = 'hatch_user'
   var SHOWN_PREFIX = 'hatch_shown_'
@@ -317,6 +337,162 @@
     showQuestion(0)
   }
 
+  // ─── Chameleon: host app theme detection ──────────────────────────────────
+
+  function getEffectiveBackground(el) {
+    var node = el
+    while (node && node !== document.documentElement) {
+      var bg = window.getComputedStyle(node).backgroundColor
+      if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)') return bg
+      node = node.parentElement
+    }
+    return 'rgb(255,255,255)'
+  }
+
+  function relativeLuminance(rgbStr) {
+    var m = (rgbStr || '').match(/[\d.]+/g)
+    if (!m || m.length < 3) return 1
+    var r = +m[0] / 255, g = +m[1] / 255, b = +m[2] / 255
+    var f = function (c) { return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4) }
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+  }
+
+  function rgbToHsl(rgbStr) {
+    var m = (rgbStr || '').match(/[\d.]+/g)
+    if (!m || m.length < 3) return [0, 0, 50]
+    var r = +m[0] / 255, g = +m[1] / 255, b = +m[2] / 255
+    var max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2, s = 0, h = 0
+    if (max !== min) {
+      s = l > 0.5 ? (max - min) / (2 - max - min) : (max - min) / (max + min)
+      switch (max) {
+        case r: h = ((g - b) / (max - min) + (g < b ? 6 : 0)) / 6; break
+        case g: h = ((b - r) / (max - min) + 2) / 6; break
+        case b: h = ((r - g) / (max - min) + 4) / 6; break
+      }
+    }
+    return [h * 360, s * 100, l * 100]
+  }
+
+  function isColorful(c) {
+    if (!c || c === 'transparent' || c === 'rgba(0, 0, 0, 0)') return false
+    var hsl = rgbToHsl(c)
+    return hsl[1] > 20 && hsl[2] > 15 && hsl[2] < 90
+  }
+
+  function detectAccentColor() {
+    try {
+      var root = window.getComputedStyle(document.documentElement)
+      var cssVars = ['--primary', '--accent', '--brand', '--color-primary', '--primary-color', '--theme-primary']
+      for (var i = 0; i < cssVars.length; i++) {
+        var v = root.getPropertyValue(cssVars[i]).trim()
+        if (v && isColorful(normalizeColor(v))) return normalizeColor(v)
+      }
+      var els = document.querySelectorAll('button, a[href], [role="button"], .btn, [class*="btn"]')
+      var counts = {}
+      for (var j = 0; j < Math.min(els.length, 60); j++) {
+        var s = window.getComputedStyle(els[j])
+        var candidates = [s.backgroundColor, s.color, s.borderColor]
+        for (var k = 0; k < candidates.length; k++) {
+          var c = candidates[k]
+          if (isColorful(c)) { counts[c] = (counts[c] || 0) + 1 }
+        }
+      }
+      var best = null, bestScore = 0
+      for (var col in counts) {
+        var hsl = rgbToHsl(col)
+        var score = counts[col] * (hsl[1] / 100)
+        if (score > bestScore) { bestScore = score; best = col }
+      }
+      return best
+    } catch (e) { return null }
+  }
+
+  function normalizeColor(c) {
+    if (!c) return null
+    // If already rgb()/rgba() string, return as-is
+    if (/^rgb/.test(c)) return c
+    // hex or named — create temp element to resolve
+    try {
+      var tmp = document.createElement('div')
+      tmp.style.color = c
+      document.body.appendChild(tmp)
+      var computed = window.getComputedStyle(tmp).color
+      document.body.removeChild(tmp)
+      return computed
+    } catch (e) { return null }
+  }
+
+  function detectBorderRadius() {
+    try {
+      var els = document.querySelectorAll('button, [role="button"], .btn, input[type="submit"]')
+      var radii = []
+      for (var i = 0; i < Math.min(els.length, 20); i++) {
+        var r = parseFloat(window.getComputedStyle(els[i]).borderRadius)
+        if (!isNaN(r)) radii.push(r)
+      }
+      if (!radii.length) return null
+      radii.sort(function (a, b) { return a - b })
+      var median = radii[Math.floor(radii.length / 2)]
+      return Math.min(24, Math.max(4, median)) + 'px'
+    } catch (e) { return null }
+  }
+
+  function detectHostTheme() {
+    var theme = { isDark: false, font: null, accent: null, radius: null, surfaceBg: null, textColor: null }
+    try {
+      var bodyStyle = window.getComputedStyle(document.body)
+      theme.font = bodyStyle.fontFamily || null
+      var bg = getEffectiveBackground(document.body)
+      var lum = relativeLuminance(bg)
+      theme.isDark = lum < 0.4
+      theme.surfaceBg = bg
+      theme.textColor = theme.isDark ? '#FFFFFF' : '#0A0A0B'
+      theme.accent = detectAccentColor()
+      theme.radius = detectBorderRadius()
+    } catch (e) {}
+    return theme
+  }
+
+  // Ensure WCAG AA contrast ratio >= 4.5 between text and background
+  function contrastRatio(lum1, lum2) {
+    var l1 = Math.max(lum1, lum2), l2 = Math.min(lum1, lum2)
+    return (l1 + 0.05) / (l2 + 0.05)
+  }
+
+  // Apply chameleon overrides to a config object (returns new config, never mutates)
+  function applyChameleon(config) {
+    try {
+      var theme = detectHostTheme()
+      var c = Object.assign({}, config)
+
+      if (config.adapt_font !== false && theme.font) {
+        c._chameleon_font = theme.font
+      }
+
+      if (config.adapt_colors !== false) {
+        if (theme.accent) {
+          // Validate contrast against modal surface
+          var surfaceLum = relativeLuminance(theme.isDark ? 'rgb(30,30,35)' : 'rgb(255,255,255)')
+          var accentLum = relativeLuminance(theme.accent)
+          if (contrastRatio(accentLum, surfaceLum) >= 2.5) {
+            c._chameleon_accent = theme.accent
+          }
+        }
+        c._chameleon_dark = theme.isDark
+        c._chameleon_surface = theme.surfaceBg
+        c._chameleon_text = theme.textColor
+      }
+
+      if (config.adapt_radius !== false && theme.radius) {
+        c._chameleon_radius = theme.radius
+      }
+
+      return c
+    } catch (e) {
+      return config // graceful degradation
+    }
+  }
+
   // ─── Style injection ────────────────────────────────────────────────────────
 
   function injectStyles() {
@@ -485,9 +661,32 @@
   function buildModalBase(config, accentColor) {
     var el = document.createElement('div')
     el.id = 'hatch-modal'
-    el.style.setProperty('--hatch-accent', accentColor)
-    el.style.setProperty('--hatch-btn-radius', btnRadius(config.button_shape))
-    el.style.fontFamily = FONTS[config.font_family] || FONTS.system
+
+    // Chameleon overrides take priority when theme_mode === 'auto'
+    var effectiveAccent = (config._chameleon_accent || accentColor)
+    el.style.setProperty('--hatch-accent', effectiveAccent)
+    el.style.setProperty('--hatch-btn-radius', config._chameleon_radius || btnRadius(config.button_shape))
+
+    // Font
+    var effectiveFont = config._chameleon_font || FONTS[config.font_family] || FONTS.system
+    el.style.fontFamily = effectiveFont
+
+    // Dark/light surface
+    if (config._chameleon_dark !== undefined) {
+      if (config._chameleon_dark) {
+        el.style.background = 'rgba(18,18,22,0.97)'
+        el.style.color = '#FFFFFF'
+        el.style.setProperty('--hatch-text', '#FFFFFF')
+        el.style.setProperty('--hatch-sub-text', 'rgba(255,255,255,0.65)')
+        el.style.setProperty('--hatch-border', 'rgba(255,255,255,0.1)')
+      } else {
+        el.style.background = '#FFFFFF'
+        el.style.color = '#0A0A0B'
+        el.style.setProperty('--hatch-text', '#0A0A0B')
+        el.style.setProperty('--hatch-sub-text', 'rgba(10,10,11,0.6)')
+        el.style.setProperty('--hatch-border', 'rgba(0,0,0,0.1)')
+      }
+    }
     var anim = config.animation_style || 'slide'
     if (anim === 'fade') el.style.animation = 'hatchFadeIn 0.3s ease'
     else if (anim === 'zoom') el.style.animation = 'hatchZoomIn 0.3s cubic-bezier(0.34,1.56,0.64,1)'
@@ -604,18 +803,25 @@
   }
 
   function renderSidePanel(config, plans, overlay, yearly) {
-    var acc = (config.design && config.design.accentColor) || '#6366F1'
+    var acc = config._chameleon_accent || (config.design && config.design.accentColor) || '#6366F1'
     var yEnabled = config.show_yearly_toggle && plans.some(function(p) { return p.price_yearly > 0 })
     overlay.style.justifyContent = 'flex-end'
     overlay.style.padding = '0'
-    overlay.style.background = 'rgba(0,0,0,0.5)'
+    overlay.style.background = 'rgba(0,0,0,' + (config._chameleon_dark ? '0.6' : '0.45') + ')'
     overlay.style.backdropFilter = 'blur(4px)'
     var modal = document.createElement('div')
     modal.id = 'hatch-modal'
     modal.className = 'hatch-side-panel'
     modal.style.setProperty('--hatch-accent', acc)
-    modal.style.setProperty('--hatch-btn-radius', btnRadius(config.button_shape))
-    modal.style.fontFamily = FONTS[config.font_family] || FONTS.system
+    modal.style.setProperty('--hatch-btn-radius', config._chameleon_radius || btnRadius(config.button_shape))
+    modal.style.fontFamily = config._chameleon_font || FONTS[config.font_family] || FONTS.system
+    if (config._chameleon_dark !== undefined) {
+      modal.style.background = config._chameleon_dark ? 'rgba(18,18,22,0.98)' : '#FFFFFF'
+      modal.style.color = config._chameleon_dark ? '#FFFFFF' : '#0A0A0B'
+      modal.style.setProperty('--hatch-text', config._chameleon_dark ? '#FFFFFF' : '#0A0A0B')
+      modal.style.setProperty('--hatch-sub-text', config._chameleon_dark ? 'rgba(255,255,255,0.65)' : 'rgba(10,10,11,0.6)')
+      modal.style.setProperty('--hatch-border', config._chameleon_dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)')
+    }
     modal.innerHTML = (config.closeable !== false ? '<button id="hatch-close" style="top:16px;right:16px">✕</button>' : '') +
       buildUrgency(config) + buildCountdown(config) +
       '<h2 class="hatch-headline" style="font-size:20px">' + esc(config.headline || 'Unlock full access') + '</h2>' +
@@ -632,13 +838,18 @@
 
   function renderPaywall(config, plans) {
     if (state.activePaywall) return
-    if (config.custom_css && !document.getElementById('hatch-custom-css-' + config.id)) {
+
+    // Apply chameleon theme detection when auto mode is active (default)
+    var effectiveConfig = (config.theme_mode !== 'manual') ? applyChameleon(config) : config
+
+    if (effectiveConfig.custom_css && !document.getElementById('hatch-custom-css-' + effectiveConfig.id)) {
       var cs = document.createElement('style')
-      cs.id = 'hatch-custom-css-' + config.id
-      cs.textContent = config.custom_css
+      cs.id = 'hatch-custom-css-' + effectiveConfig.id
+      cs.textContent = effectiveConfig.custom_css
       document.head.appendChild(cs)
     }
 
+    config = effectiveConfig  // use chameleon-enhanced config for all downstream rendering
     var template = config.template || 'classic-modal'
     var yearly = false
     var overlay = document.createElement('div')

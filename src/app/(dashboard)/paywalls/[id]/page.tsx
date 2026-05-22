@@ -63,6 +63,11 @@ type PaywallConfig = {
   custom_css: string | null
   success_redirect_url: string | null
   hide_powered_by: boolean
+  // V3 — Chameleon
+  theme_mode: "auto" | "manual"
+  adapt_font: boolean
+  adapt_colors: boolean
+  adapt_radius: boolean
 }
 
 type Plan = {
@@ -468,7 +473,8 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   }
 
   function copyInstallSnippet() {
-    const snippet = `<script async src="https://cdn.hatch.io/v1/sdk.js" data-key="${apiKey}"></script>`
+    const sdkUrl = window.location.origin + "/sdk/sdk.js"
+    const snippet = `<script async src="${sdkUrl}" data-key="${apiKey}"></script>`
     navigator.clipboard.writeText(snippet)
     setSnippetCopied(true)
     setTimeout(() => setSnippetCopied(false), 2000)
@@ -544,6 +550,52 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
           {/* ── DESIGN TAB ─────────────────────────────────────────── */}
           {activeTab === 0 && (
             <>
+              {/* Chameleon mode */}
+              <div className={`p-3 rounded-xl border transition-all ${
+                (form.theme_mode ?? "auto") === "auto"
+                  ? "border-indigo-500/30 bg-indigo-500/8"
+                  : "border-white/6 bg-white/2"
+              }`}>
+                <div className="flex items-start gap-2.5">
+                  <span className="text-base leading-none mt-0.5">🦎</span>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-xs font-semibold text-white">Chameleon mode</p>
+                      <button
+                        onClick={() => update("theme_mode", (form.theme_mode ?? "auto") === "auto" ? "manual" : "auto")}
+                        className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 ${(form.theme_mode ?? "auto") === "auto" ? "bg-indigo-600" : "bg-white/10"}`}
+                      >
+                        <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${(form.theme_mode ?? "auto") === "auto" ? "translate-x-4.5" : "translate-x-0.5"}`} />
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-[#71717A]">Automatically match your app&apos;s fonts, colors and style. The paywall blends into any host app.</p>
+                    {(form.theme_mode ?? "auto") === "auto" && (
+                      <div className="mt-2.5 space-y-1.5">
+                        {([
+                          ["adapt_font", "Adapt fonts"],
+                          ["adapt_colors", "Adapt colors"],
+                          ["adapt_radius", "Adapt radius"],
+                        ] as [keyof PaywallConfig, string][]).map(([key, label]) => (
+                          <div key={key} className="flex items-center justify-between">
+                            <span className="text-[10px] text-[#71717A]">{label}</span>
+                            <button
+                              onClick={() => update(key, !(form[key] ?? true))}
+                              className={`w-7 h-4 rounded-full transition-colors relative ${(form[key] ?? true) ? "bg-indigo-600" : "bg-white/10"}`}
+                            >
+                              <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform ${(form[key] ?? true) ? "translate-x-3.5" : "translate-x-0.5"}`} />
+                            </button>
+                          </div>
+                        ))}
+                        <p className="text-[10px] text-indigo-400/70 mt-1.5 italic">Preview shows default styling. The live paywall adapts to your app automatically.</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Design controls — dimmed in auto/chameleon mode */}
+              <div className={`space-y-4 ${(form.theme_mode ?? "auto") === "auto" ? "opacity-50 pointer-events-none select-none" : ""}`}>
+
               {/* Templates */}
               <div>
                 <label className="text-xs text-[#71717A] mb-2 block font-medium">Template</label>
@@ -690,6 +742,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                   </div>
                 ))}
               </div>
+              </div>{/* /design controls dim wrapper */}
             </>
           )}
 
@@ -1652,7 +1705,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
           <h3 className="text-xs font-semibold text-[#71717A] mb-3 uppercase tracking-wide">Install Snippet</h3>
           <div className="relative bg-[#0A0A0B] border border-white/6 rounded-lg p-2.5 mb-2">
             <code className="text-[10px] text-indigo-300 font-mono break-all leading-relaxed block pr-6">
-              {`<script async\n  src="https://cdn.hatch.io/v1/sdk.js"\n  data-key="${apiKey || "pk_…"}"\n></script>`}
+              {`<script async\n  src="${typeof window !== 'undefined' ? window.location.origin : ''}/sdk/sdk.js"\n  data-key="${apiKey || "pk_…"}"\n></script>`}
             </code>
             <button onClick={copyInstallSnippet} className="absolute top-2 right-2 p-1 bg-white/5 hover:bg-white/10 rounded border border-white/10 transition-colors" title="Copy snippet">
               {snippetCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-[#71717A]" />}
