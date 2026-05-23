@@ -504,6 +504,57 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     setTimeout(() => setSnippetCopied(false), 2000)
   }
 
+  /**
+   * Ensures at least one active (non-archived) control variant exists for this
+   * paywall. Called automatically when publishing to "live" so that
+   * /api/sdk/config always has a variant to work with.
+   * Resilient: drops optional columns if they're missing from the DB schema.
+   */
+  async function ensureControlVariant() {
+    const { data: existing } = await supabase
+      .from("paywall_variants")
+      .select("id")
+      .eq("paywall_id", id)
+      .is("archived_at", null)
+      .limit(1)
+    if (existing?.length) return // variant(s) already exist — nothing to do
+
+    const OPTIONAL_VARIANT_COLS = [
+      "body_copy", "accent_color", "generated_by", "is_control",
+      "posterior_alpha", "posterior_beta", "hypothesis",
+    ]
+
+    const base: Record<string, unknown> = {
+      paywall_id: id,
+      name: "Control",
+      is_control: true,
+      generated_by: "human",
+      headline: form.headline ?? "",
+      subheadline: form.subheadline ?? null,
+      cta_copy: form.cta_copy ?? "",
+      body_copy: form.body_copy ?? null,
+      accent_color: (form.design as Record<string, string>)?.accentColor ?? "#6366F1",
+      posterior_alpha: 1,
+      posterior_beta: 1,
+      traffic_split: 100,
+    }
+
+    let payload = { ...base }
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const { error } = await supabase.from("paywall_variants").insert(payload)
+      if (!error) return
+      const match = error.message?.match(/Could not find the '([a-z_]+)' column/i)
+      const col = match?.[1]
+      if (col && col in payload && OPTIONAL_VARIANT_COLS.includes(col)) {
+        console.warn(`[Hatch] paywall_variants: column '${col}' missing — dropping it`)
+        delete payload[col]
+        continue
+      }
+      console.warn("[Hatch] Could not create control variant:", error.message)
+      return
+    }
+  }
+
   async function handlePublish() {
     setPublishing(true)
     const newStatus = form.status === "live" ? "draft" : "live"
@@ -513,6 +564,9 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     if (result.error) {
       toast.error(result.error.message)
     } else {
+      // Ensure a control variant exists so /api/sdk/config can serve the paywall
+      if (newStatus === "live") await ensureControlVariant()
+
       if (result.droppedFields.length > 0) {
         toast.success(
           newStatus === "live"

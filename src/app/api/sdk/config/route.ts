@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createServiceClient } from "@supabase/supabase-js"
-import { computeSegmentHash, bucketUtm, bucketHour } from "@/lib/segment"
+import { computeSegmentHash, bucketHour } from "@/lib/segment"
 import { withDefaults } from "@/lib/paywall-resilience"
 
 const CORS_HEADERS = {
@@ -23,9 +23,6 @@ function betaSample(alpha: number, beta: number): number {
   return Math.max(0, Math.min(1, mean + z * std))
 }
 
-// Contextual Thompson: blend segment posterior with global, weighted by data richness.
-// When segment has >= CONFIDENCE_THRESHOLD observations, trust it fully.
-// When bootstrapping, blend proportionally toward global.
 const SEGMENT_CONFIDENCE_THRESHOLD = 10
 
 type Variant = {
@@ -39,6 +36,16 @@ type Variant = {
   design: Record<string, unknown>
   posterior_alpha: number
   posterior_beta: number
+}
+
+// ─── Plans helper — fetches plans by IDs in a single query ───────────────────
+// We never use PostgREST embedded joins for plans because plans.account_id → accounts
+// (not paywalls), so there is no FK path PostgREST can resolve.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchPlansForIds(supabase: any, planIds: string[]): Promise<any[]> {
+  if (!planIds.length) return []
+  const { data } = await supabase.from("plans").select("*").in("id", planIds)
+  return data ?? []
 }
 
 export async function GET(request: NextRequest) {
@@ -83,15 +90,33 @@ export async function GET(request: NextRequest) {
     hour_bucket:   hourRaw ?? bucketHour(),
   })
 
+  // ── Single paywall by ID ────────────────────────────────────────────────────
   if (paywallId) {
-    const [{ data: paywall }, { data: quiz }] = await Promise.all([
-      supabase
+    // Fetch paywall WITHOUT embedded join — plans has no FK to paywalls
+    const { data: paywall } = await supabase
+      .from("paywalls")
+      .select("*")
+      .eq("account_id", user.account_id)
+      .eq("status", "live")
+      .eq("id", paywallId)
+      .single()
+
+    if (!paywall) {
+      // Look up the real reason: not found vs not live
+      const { data: existing } = await supabase
         .from("paywalls")
-        .select("*, plans(*)")
-        .eq("account_id", user.account_id)
-        .eq("status", "live")
+        .select("id, status")
         .eq("id", paywallId)
-        .single(),
+        .eq("account_id", user.account_id)
+        .single()
+      const reason = existing ? "not_live" : "not_found"
+      console.log(`[sdk/config] Paywall ${paywallId} not served: ${reason}${existing ? ` (actual status: ${existing.status})` : ""}`)
+      return NextResponse.json({ paywall: null, reason }, { headers: CORS_HEADERS })
+    }
+
+    // Fetch plans + quiz in parallel
+    const [plans, { data: quiz }] = await Promise.all([
+      fetchPlansForIds(supabase, paywall.plan_ids ?? []),
       supabase
         .from("paywall_quizzes")
         .select("id, questions, completion_message, trigger_mode, is_active")
@@ -100,19 +125,11 @@ export async function GET(request: NextRequest) {
         .maybeSingle(),
     ])
 
-    if (!paywall) {
-      // Check if it exists but is not live (draft/archived) to give a clearer SDK log
-      const { data: draft } = await supabase
-        .from("paywalls")
-        .select("id, status")
-        .eq("id", paywallId)
-        .eq("account_id", user.account_id)
-        .single()
-      const reason = draft ? `not_live (status: ${draft.status})` : "not_found"
-      return NextResponse.json({ paywall: null, reason }, { headers: CORS_HEADERS })
-    }
+    const base = withDefaults({ ...paywall, plans })
+    const enriched = await applyVariantContextual(
+      supabase, base, sessionId, user.account_id, segmentHash, segmentFeatures
+    )
 
-    const enriched = await applyVariantContextual(supabase, withDefaults(paywall), sessionId, user.account_id, segmentHash, segmentFeatures)
     return NextResponse.json(
       {
         paywall: enriched,
@@ -123,9 +140,10 @@ export async function GET(request: NextRequest) {
     )
   }
 
+  // ── List: first live paywall ────────────────────────────────────────────────
   const { data: paywalls } = await supabase
     .from("paywalls")
-    .select("*, plans(*)")
+    .select("*")
     .eq("account_id", user.account_id)
     .eq("status", "live")
     .order("conversions", { ascending: false })
@@ -137,16 +155,32 @@ export async function GET(request: NextRequest) {
     )
   }
 
+  // Batch-fetch all plans referenced by any live paywall (single query)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const enrichedFirst = await applyVariantContextual(supabase, withDefaults(paywalls[0] as any), sessionId, user.account_id, segmentHash, segmentFeatures)
+  const allPlanIds: string[] = [...new Set((paywalls as any[]).flatMap(p => p.plan_ids ?? []))]
+  const allPlans = await fetchPlansForIds(supabase, allPlanIds)
+  const planMap = new Map(allPlans.map((p: { id: string }) => [p.id, p]))
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result = [enrichedFirst, ...(paywalls.slice(1) as any[]).map(p => withDefaults(p))]
+  const paywallsWithPlans = (paywalls as any[]).map(p =>
+    withDefaults({
+      ...p,
+      plans: (p.plan_ids ?? []).map((pid: string) => planMap.get(pid)).filter(Boolean),
+    })
+  )
+
+  const enrichedFirst = await applyVariantContextual(
+    supabase, paywallsWithPlans[0], sessionId, user.account_id, segmentHash, segmentFeatures
+  )
+  const result = [enrichedFirst, ...paywallsWithPlans.slice(1)]
+
   return NextResponse.json(
     { paywalls: result, segment_hash: segmentHash },
     { headers: { ...CORS_HEADERS, "Cache-Control": "no-store" } }
   )
 }
 
+// ─── Contextual Thompson bandit ───────────────────────────────────────────────
 async function applyVariantContextual(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
@@ -164,7 +198,14 @@ async function applyVariantContextual(
     .eq("paywall_id", paywall.id)
     .is("archived_at", null)
 
-  if (!variants?.length) return paywall
+  const variantCount = variants?.length ?? 0
+  console.log(`[sdk/config] Paywall ${paywall.id} is live — ${variantCount} active variant(s)`)
+
+  // No variants: serve the base paywall as-is (no A/B test running)
+  if (!variantCount) {
+    console.log(`[sdk/config] No variants — serving base paywall for ${paywall.id}`)
+    return paywall
+  }
 
   // Fetch segment-level posteriors for this (variant_id, segment_hash) pair
   const { data: segPosteriors } = await supabase
@@ -180,7 +221,7 @@ async function applyVariantContextual(
   // Contextual Thompson: blend segment+global weighted by confidence
   const scores = (variants as Variant[]).map(v => {
     const seg = segMap.get(v.id) as { alpha: number; beta: number; views: number } | undefined
-    const segObs = seg ? (seg.alpha + seg.beta - 2) : 0  // subtract priors
+    const segObs = seg ? (seg.alpha + seg.beta - 2) : 0
     const segWeight = Math.min(1, segObs / SEGMENT_CONFIDENCE_THRESHOLD)
 
     const segSample    = seg ? betaSample(seg.alpha, seg.beta) : 0
@@ -191,8 +232,9 @@ async function applyVariantContextual(
   })
 
   const chosen = scores.sort((a, b) => b.sample - a.sample)[0].variant
+  console.log(`[sdk/config] Selected variant ${chosen.id} (${chosen.name}) for segment ${segmentHash}`)
 
-  // Bootstrap segment posteriors if missing for this variant
+  // Bootstrap segment posteriors for any variant not yet seen in this segment
   const missingVariants = (variants as Variant[]).filter(v => !segMap.has(v.id))
   if (missingVariants.length > 0) {
     await supabase.from("variant_segment_posteriors").upsert(
@@ -206,7 +248,7 @@ async function applyVariantContextual(
     )
   }
 
-  // Record assignment with segment hash stored for event-time lookup
+  // Record assignment
   if (sessionId) {
     await supabase.from("variant_assignments").upsert(
       {
