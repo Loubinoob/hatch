@@ -45,25 +45,32 @@ export default function PaywallsPage() {
     const { data } = await supabase.from("paywalls").select("*").eq("account_id", profile.account_id).order("updated_at", { ascending: false })
     const paywallList = data ?? []
 
-    // Views fix: paywall_impressions is the authoritative source.
-    // Fall back to paywalls.views when the impressions table is empty for a given paywall.
+    // Views: use events table as source of truth (same approach as dashboard page).
+    // This is always accurate regardless of whether paywall_impressions migration has been applied.
     if (paywallList.length > 0) {
       const paywallIds = paywallList.map((p: Paywall) => p.id)
-      const { data: impressionRows } = await supabase
-        .from("paywall_impressions")
+      const { data: viewRows } = await supabase
+        .from("events")
         .select("paywall_id")
+        .eq("account_id", profile.account_id)
+        .eq("event_type", "paywall_shown")
         .in("paywall_id", paywallIds)
-      if (impressionRows && impressionRows.length > 0) {
+      if (viewRows && viewRows.length > 0) {
         // Count per paywall_id in JS
         const viewsByPaywall: Record<string, number> = {}
-        for (const row of impressionRows) {
-          viewsByPaywall[row.paywall_id] = (viewsByPaywall[row.paywall_id] ?? 0) + 1
-        }
-        // Override views where we have impression data
-        for (const pw of paywallList) {
-          if (viewsByPaywall[pw.id] !== undefined) {
-            pw.views = viewsByPaywall[pw.id]
+        for (const row of viewRows) {
+          if (row.paywall_id) {
+            viewsByPaywall[row.paywall_id] = (viewsByPaywall[row.paywall_id] ?? 0) + 1
           }
+        }
+        // Override views for every paywall (0 if no events yet)
+        for (const pw of paywallList) {
+          pw.views = viewsByPaywall[pw.id] ?? 0
+        }
+      } else {
+        // No events yet — reset all views to 0 (don't trust paywalls.views column)
+        for (const pw of paywallList) {
+          pw.views = 0
         }
       }
     }

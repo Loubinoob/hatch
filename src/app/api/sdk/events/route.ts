@@ -110,11 +110,16 @@ export async function POST(request: NextRequest) {
 
   // ─── paywall_shown: increment counters ────────────────────────────────────
   if (event === "paywall_shown" && paywallId) {
-    // Resilient views increment — ignore if column missing
+    // Resilient views increment — log errors so failures are visible in Vercel logs
     try {
       const { data: pw } = await supabase.from("paywalls").select("views").eq("id", paywallId).single()
-      if (pw) await supabase.from("paywalls").update({ views: (pw.views ?? 0) + 1 }).eq("id", paywallId)
-    } catch { /* column may be missing — non-fatal, impressions table is source of truth */ }
+      if (pw) {
+        const { error: viewsErr } = await supabase.from("paywalls").update({ views: (pw.views ?? 0) + 1 }).eq("id", paywallId)
+        if (viewsErr) console.error(`[sdk/events] paywalls.views increment failed: ${viewsErr.message}`)
+      }
+    } catch (err) {
+      console.error("[sdk/events] paywalls.views increment exception:", err instanceof Error ? err.message : err)
+    }
 
     const resolvedVariantId = variantId ?? await lookupVariantId(supabase, paywallId, sessionId)
     if (resolvedVariantId) {

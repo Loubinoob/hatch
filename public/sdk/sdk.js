@@ -1253,6 +1253,7 @@
       variantId: state.variantId || null,
       properties: enriched,
     }
+    console.log('[Hatch] track', eventName, { paywallId: payload.paywallId, sessionId: state.sessionId ? state.sessionId.slice(0, 8) + '…' : null })
     if (navigator.sendBeacon) {
       navigator.sendBeacon(API_BASE + '/sdk/events', new Blob([JSON.stringify(payload)], { type: 'application/json' }))
     } else {
