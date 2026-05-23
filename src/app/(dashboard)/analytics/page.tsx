@@ -5,8 +5,8 @@ import { createClient } from "@/lib/supabase/client"
 import { motion } from "framer-motion"
 import {
   Loader2, TrendingDown, CalendarDays, BarChart2, ArrowRight,
-  MousePointerClick, Clock, X, Monitor, Smartphone, Tablet,
-  DollarSign, Zap, Activity, Download,
+  MousePointerClick, Clock, X, Monitor, Globe,
+  DollarSign, Zap, Activity, Download, HelpCircle,
 } from "lucide-react"
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -25,7 +25,7 @@ const DATE_RANGES = [
   { label: "90d", days: 90 },
 ] as const
 
-type Tab = "funnel" | "behavior" | "breakdowns" | "pricing"
+type Tab = "funnel" | "behavior" | "breakdowns" | "quiz" | "pricing"
 
 // ─── Small card ──────────────────────────────────────────────────────────────
 function KpiCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -78,10 +78,25 @@ export default function AnalyticsPage() {
   const [billingToggle, setBillingToggle] = useState<{ monthly: number; yearly: number }>({ monthly: 0, yearly: 0 })
   const [recentBehavior, setRecentBehavior] = useState<{ id: string; event_type: string; created_at: string; properties: Record<string, unknown> }[]>([])
 
+  // ── Behavior extra ─────────────────────────────────────────────────────────
+  const [avgScrollDepth, setAvgScrollDepth] = useState<number>(0)
+
   // ── Breakdown data ─────────────────────────────────────────────────────────
-  const [deviceBreakdown, setDeviceBreakdown]  = useState<{ device: string; rate: number; count: number }[]>([])
-  const [sourceBreakdown, setSourceBreakdown]  = useState<{ source: string; rate: number; count: number }[]>([])
+  const [deviceBreakdown, setDeviceBreakdown]   = useState<{ device: string; rate: number; count: number }[]>([])
+  const [sourceBreakdown, setSourceBreakdown]   = useState<{ source: string; rate: number; count: number }[]>([])
+  const [countryBreakdown, setCountryBreakdown] = useState<{ country: string; rate: number; count: number }[]>([])
   const [variantBreakdown, setVariantBreakdown] = useState<{ name: string; conv: number; views: number }[]>([])
+
+  // ── Quiz data ──────────────────────────────────────────────────────────────
+  const [quizStats, setQuizStats] = useState<{
+    started: number
+    completed: number
+    abandoned: number
+    completionRate: number
+    convConverters: number   // conversions from quiz-completers
+    convNonQuiz: number      // conversions from non-quiz impressions
+    dropoff: { question_id: string; answered: number; dropped: number }[]
+  } | null>(null)
 
   // ── Pricing data ───────────────────────────────────────────────────────────
   const [pricingData, setPricingData] = useState<{
@@ -106,6 +121,7 @@ export default function AnalyticsPage() {
       loadFunnel(accId, since, days),
       loadBehavior(accId, since),
       loadBreakdowns(accId, since),
+      loadQuiz(accId, since),
       loadPricing(accId),
     ])
     setLoading(false)
@@ -190,6 +206,23 @@ export default function AnalyticsPage() {
     ])
     setAbandonedRate(startedCount ? ((abandonedCount ?? 0) / startedCount) * 100 : 0)
 
+    // Average scroll depth from paywall_impressions (primary source) or scroll_depth events
+    try {
+      const { data: scrollImpressions } = await supabase
+        .from("paywall_impressions")
+        .select("scroll_depth_max")
+        .eq("account_id", accId)
+        .gte("shown_at", since)
+        .gt("scroll_depth_max", 0)
+        .limit(2000)
+      if (scrollImpressions && scrollImpressions.length > 0) {
+        const avg = scrollImpressions.reduce((s: number, r: { scroll_depth_max: number }) => s + (r.scroll_depth_max ?? 0), 0) / scrollImpressions.length
+        setAvgScrollDepth(Math.round(avg))
+      }
+    } catch {
+      // paywall_impressions table may not exist yet — skip
+    }
+
     // Recent behavioral events table
     const { data: recent } = await supabase.from("events")
       .select("id, event_type, created_at, properties")
@@ -245,6 +278,33 @@ export default function AnalyticsPage() {
     })).sort((a, b) => b.rate - a.rate).slice(0, 8)
     setSourceBreakdown(srcRows)
 
+    // Country breakdown from paywall_impressions (server-side geo)
+    try {
+      const { data: impRows } = await supabase
+        .from("paywall_impressions")
+        .select("country, converted")
+        .eq("account_id", accId)
+        .gte("shown_at", since)
+        .not("country", "is", null)
+        .limit(5000)
+      if (impRows && impRows.length > 0) {
+        const cntShown: Record<string, number> = {}
+        const cntPaid:  Record<string, number> = {}
+        for (const r of impRows) {
+          const c = r.country ?? "Unknown"
+          cntShown[c] = (cntShown[c] ?? 0) + 1
+          if (r.converted) cntPaid[c] = (cntPaid[c] ?? 0) + 1
+        }
+        const countryRows = Object.entries(cntShown)
+          .map(([country, cnt]) => ({ country, count: cnt, rate: cnt > 0 ? ((cntPaid[country] ?? 0) / cnt) * 100 : 0 }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5)
+        setCountryBreakdown(countryRows)
+      }
+    } catch {
+      // impressions table may not exist yet
+    }
+
     // Variant breakdown
     const { data: variants } = await supabase
       .from("paywall_variants")
@@ -256,6 +316,70 @@ export default function AnalyticsPage() {
     setVariantBreakdown((variants ?? []).map((v: { id: string; name: string; views: number; conversions: number }) => ({
       name: v.name, views: v.views, conv: v.views > 0 ? (v.conversions / v.views) * 100 : 0,
     })))
+  }
+
+  // ── Quiz ──────────────────────────────────────────────────────────────────
+  async function loadQuiz(accId: string, since: string) {
+    const [{ count: started }, { count: completed }, { count: abandoned }] = await Promise.all([
+      supabase.from("events").select("*", { count: "exact", head: true })
+        .eq("account_id", accId).eq("event_type", "quiz_started").gte("created_at", since),
+      supabase.from("events").select("*", { count: "exact", head: true })
+        .eq("account_id", accId).eq("event_type", "quiz_completed").gte("created_at", since),
+      supabase.from("events").select("*", { count: "exact", head: true })
+        .eq("account_id", accId).eq("event_type", "quiz_abandoned").gte("created_at", since),
+    ])
+
+    const s = started ?? 0
+    if (s === 0) { setQuizStats(null); return }
+    const c = completed ?? 0
+    const ab = abandoned ?? 0
+
+    // Conversion split: quiz-completers vs non-quiz
+    let convConverters = 0, convNonQuiz = 0
+    try {
+      const { data: impRows } = await supabase
+        .from("paywall_impressions")
+        .select("quiz_completed, converted")
+        .eq("account_id", accId)
+        .gte("shown_at", since)
+        .limit(5000)
+      for (const r of impRows ?? []) {
+        if (r.converted) {
+          if (r.quiz_completed) convConverters++
+          else convNonQuiz++
+        }
+      }
+    } catch { /* impressions may not exist */ }
+
+    // Drop-off per question from quiz_question_answered events
+    const { data: qaEvents } = await supabase
+      .from("events")
+      .select("properties")
+      .eq("account_id", accId)
+      .eq("event_type", "quiz_question_answered")
+      .gte("created_at", since)
+      .limit(5000)
+
+    const answeredByQ: Record<string, number> = {}
+    for (const e of qaEvents ?? []) {
+      const qid = (e.properties as Record<string, unknown>)?.question_id as string
+      if (qid) answeredByQ[qid] = (answeredByQ[qid] ?? 0) + 1
+    }
+    const dropoff = Object.entries(answeredByQ).map(([question_id, answered]) => ({
+      question_id,
+      answered,
+      dropped: s - answered,
+    })).sort((a, b) => b.answered - a.answered)
+
+    setQuizStats({
+      started: s,
+      completed: c,
+      abandoned: ab,
+      completionRate: s > 0 ? (c / s) * 100 : 0,
+      convConverters,
+      convNonQuiz,
+      dropoff,
+    })
   }
 
   // ── Pricing ────────────────────────────────────────────────────────────────
@@ -319,8 +443,37 @@ export default function AnalyticsPage() {
     { id: "funnel",     label: "Funnel" },
     { id: "behavior",   label: "Behavior" },
     { id: "breakdowns", label: "Breakdowns" },
+    { id: "quiz",       label: "Quiz" },
     { id: "pricing",    label: "Pricing" },
   ]
+
+  async function exportCsv() {
+    if (!accountId) return
+    const since = subDays(new Date(), dateRange).toISOString()
+    const { data: rows } = await supabase
+      .from("events")
+      .select("id, event_type, created_at, session_id, user_id_external, paywall_id, properties")
+      .eq("account_id", accountId)
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(10000)
+    if (!rows?.length) return
+    const cols = ["id", "event_type", "created_at", "session_id", "user_id_external", "paywall_id", "properties"]
+    const csv = [
+      cols.join(","),
+      ...rows.map(r => cols.map(c => {
+        const v = c === "properties" ? JSON.stringify(r[c as keyof typeof r]) : r[c as keyof typeof r]
+        return `"${String(v ?? "").replace(/"/g, '""')}"`
+      }).join(","))
+    ].join("\n")
+    const blob = new Blob([csv], { type: "text/csv" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `hatch-events-${dateRange}d-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   const dismissColors = ["#6366F1", "#8B5CF6", "#F59E0B", "#10B981", "#EF4444"]
 
@@ -333,6 +486,12 @@ export default function AnalyticsPage() {
           <p className="text-sm text-[#71717A]">Full behavioural funnel + dynamic pricing</p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={exportCsv}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white/5 hover:bg-white/8 border border-white/10 rounded-lg text-xs text-[#71717A] hover:text-white transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" /> Export CSV
+          </button>
           <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-lg p-0.5">
             <CalendarDays className="w-3.5 h-3.5 text-[#52525B] ml-2" />
             {DATE_RANGES.map(r => (
@@ -465,10 +624,11 @@ export default function AnalyticsPage() {
       {tab === "behavior" && (
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
           {/* KPIs */}
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-5 gap-3">
             <KpiCard label="Avg dwell time" value={avgDwellMs > 0 ? `${(avgDwellMs / 1000).toFixed(1)}s` : "—"} sub="Before dismiss" />
             <KpiCard label="Abandon rate" value={abandonedRate > 0 ? formatPercent(abandonedRate) : "—"} sub="checkout_started → left" />
             <KpiCard label="Yearly toggle" value={billingToggle.yearly > 0 ? `${billingToggle.yearly}×` : "—"} sub="Users who switched" />
+            <KpiCard label="Avg scroll depth" value={avgScrollDepth > 0 ? `${avgScrollDepth}%` : "—"} sub="paywall scroll" />
             <KpiCard label="Dismissals" value={dismissData.reduce((s, d) => s + d.count, 0).toLocaleString()} sub={`Last ${dateRange} days`} />
           </div>
 
@@ -586,6 +746,21 @@ export default function AnalyticsPage() {
             </div>
           </div>
 
+          {/* Country */}
+          {countryBreakdown.length > 0 && (
+            <div className="bg-[#111114] border border-white/6 rounded-xl p-5">
+              <h3 className="text-xs font-semibold text-white mb-4 flex items-center gap-2">
+                <Globe className="w-3.5 h-3.5 text-[#52525B]" /> Conversion by country (top 5)
+              </h3>
+              <div className="space-y-2.5">
+                {countryBreakdown.map(r => (
+                  <HBar key={r.country} label={r.country} value={r.rate}
+                    max={Math.max(...countryBreakdown.map(x => x.rate), 1)} />
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Variants */}
           <div className="bg-[#111114] border border-white/6 rounded-xl p-5">
             <h3 className="text-xs font-semibold text-white mb-4 flex items-center gap-2">
@@ -601,6 +776,113 @@ export default function AnalyticsPage() {
                 </div>
             }
           </div>
+        </motion.div>
+      )}
+
+      {/* ── QUIZ TAB ────────────────────────────────────────────────────────── */}
+      {tab === "quiz" && (
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+          {!quizStats ? (
+            <div className="bg-[#111114] border border-white/6 rounded-xl p-10 text-center">
+              <HelpCircle className="w-8 h-8 text-[#52525B] mx-auto mb-3" />
+              <p className="text-sm font-medium text-white mb-1">No quiz data yet</p>
+              <p className="text-xs text-[#52525B] max-w-xs mx-auto">
+                Quiz analytics appear once you have a paywall with a pre-paywall quiz and at least one impression.
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* KPIs */}
+              <div className="grid grid-cols-4 gap-3">
+                <KpiCard label="Quiz started" value={quizStats.started.toLocaleString()} sub={`Last ${dateRange} days`} />
+                <KpiCard label="Completed" value={quizStats.completed.toLocaleString()} sub={`${formatPercent(quizStats.completionRate)} completion`} />
+                <KpiCard label="Abandoned" value={quizStats.abandoned.toLocaleString()} sub="Did not finish" />
+                <KpiCard
+                  label="Conv. uplift"
+                  value={quizStats.convConverters > 0 || quizStats.convNonQuiz > 0
+                    ? (quizStats.completed > 0 && quizStats.started - quizStats.completed > 0)
+                      ? `+${formatPercent(
+                          ((quizStats.convConverters / Math.max(quizStats.completed, 1)) -
+                           (quizStats.convNonQuiz / Math.max(quizStats.started - quizStats.completed, 1))) * 100
+                        )}`
+                      : "—"
+                    : "—"}
+                  sub="Quiz-completers vs skippers"
+                />
+              </div>
+
+              {/* Completion bar */}
+              <div className="bg-[#111114] border border-white/6 rounded-xl p-5">
+                <h3 className="text-xs font-semibold text-white mb-4">Quiz funnel</h3>
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between text-[11px] text-[#71717A] mb-1">
+                      <span>Started</span><span className="font-mono">{quizStats.started}</span>
+                    </div>
+                    <div className="h-2 bg-white/5 rounded-full"><div className="h-full bg-indigo-500 rounded-full" style={{ width: "100%" }} /></div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between text-[11px] text-[#71717A] mb-1">
+                      <span>Completed</span>
+                      <span className="font-mono">{quizStats.completed} ({formatPercent(quizStats.completionRate)})</span>
+                    </div>
+                    <div className="h-2 bg-white/5 rounded-full">
+                      <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${quizStats.completionRate}%` }} />
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between text-[11px] text-[#71717A] mb-1">
+                      <span>Abandoned</span>
+                      <span className="font-mono">{quizStats.abandoned} ({formatPercent(quizStats.started > 0 ? (quizStats.abandoned / quizStats.started) * 100 : 0)})</span>
+                    </div>
+                    <div className="h-2 bg-white/5 rounded-full">
+                      <div className="h-full bg-red-500/60 rounded-full" style={{ width: `${quizStats.started > 0 ? (quizStats.abandoned / quizStats.started) * 100 : 0}%` }} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Per-question drop-off */}
+              {quizStats.dropoff.length > 0 && (
+                <div className="bg-[#111114] border border-white/6 rounded-xl p-5">
+                  <h3 className="text-xs font-semibold text-white mb-4">Answer count per question</h3>
+                  <div className="space-y-2.5">
+                    {quizStats.dropoff.map((q, i) => (
+                      <HBar
+                        key={q.question_id}
+                        label={`Q${i + 1}: ${q.question_id.slice(0, 12)}…`}
+                        value={q.answered}
+                        max={quizStats.started}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Conversion uplift breakdown */}
+              {(quizStats.convConverters > 0 || quizStats.convNonQuiz > 0) && (
+                <div className="bg-[#111114] border border-white/6 rounded-xl p-5">
+                  <h3 className="text-xs font-semibold text-white mb-4">Conversion: quiz-completers vs skippers</h3>
+                  <div className="space-y-2.5">
+                    <HBar
+                      label="Quiz-completers"
+                      value={quizStats.completed > 0 ? (quizStats.convConverters / quizStats.completed) * 100 : 0}
+                      max={100}
+                      suffix="%"
+                    />
+                    <HBar
+                      label="Skippers"
+                      value={(quizStats.started - quizStats.completed) > 0
+                        ? (quizStats.convNonQuiz / (quizStats.started - quizStats.completed)) * 100
+                        : 0}
+                      max={100}
+                      suffix="%"
+                    />
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </motion.div>
       )}
 

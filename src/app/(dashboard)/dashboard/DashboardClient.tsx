@@ -52,13 +52,22 @@ interface Props {
 }
 
 const EVENT_LABELS: Record<string, { label: string; color: string }> = {
-  paywall_shown: { label: "Paywall shown", color: "#6366F1" },
-  plan_selected: { label: "Plan selected", color: "#8B5CF6" },
-  checkout_started: { label: "Checkout started", color: "#F59E0B" },
-  payment_success: { label: "New subscriber", color: "#10B981" },
-  trial_started: { label: "Trial started", color: "#06B6D4" },
+  paywall_shown:        { label: "Paywall shown",         color: "#6366F1" },
+  plan_selected:        { label: "Plan selected",         color: "#8B5CF6" },
+  cta_clicked:          { label: "CTA clicked",           color: "#A78BFA" },
+  checkout_started:     { label: "Checkout started",      color: "#F59E0B" },
+  checkout_abandoned:   { label: "Checkout abandoned",    color: "#EF4444" },
+  payment_success:      { label: "New subscriber ✓",      color: "#10B981" },
+  trial_started:        { label: "Trial started",         color: "#06B6D4" },
+  trial_ending:         { label: "Trial ending soon",     color: "#F97316" },
   subscription_canceled: { label: "Subscription canceled", color: "#EF4444" },
-  page_view: { label: "Page view", color: "#52525B" },
+  payment_failed:       { label: "Payment failed",        color: "#DC2626" },
+  refund_issued:        { label: "Refund issued",         color: "#EF4444" },
+  paywall_dismissed:    { label: "Paywall dismissed",     color: "#52525B" },
+  billing_toggle_changed: { label: "Billing toggle",      color: "#71717A" },
+  quiz_completed:       { label: "Quiz completed",        color: "#7C3AED" },
+  quiz_abandoned:       { label: "Quiz abandoned",        color: "#6B7280" },
+  page_view:            { label: "Page view",             color: "#3F3F46" },
 }
 
 const CHECKLIST_ITEMS = [

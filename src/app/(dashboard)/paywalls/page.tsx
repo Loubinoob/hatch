@@ -43,7 +43,32 @@ export default function PaywallsPage() {
     if (!profile) return
     setAccountId(profile.account_id)
     const { data } = await supabase.from("paywalls").select("*").eq("account_id", profile.account_id).order("updated_at", { ascending: false })
-    setPaywalls(data ?? [])
+    const paywallList = data ?? []
+
+    // Views fix: paywall_impressions is the authoritative source.
+    // Fall back to paywalls.views when the impressions table is empty for a given paywall.
+    if (paywallList.length > 0) {
+      const paywallIds = paywallList.map((p: Paywall) => p.id)
+      const { data: impressionRows } = await supabase
+        .from("paywall_impressions")
+        .select("paywall_id")
+        .in("paywall_id", paywallIds)
+      if (impressionRows && impressionRows.length > 0) {
+        // Count per paywall_id in JS
+        const viewsByPaywall: Record<string, number> = {}
+        for (const row of impressionRows) {
+          viewsByPaywall[row.paywall_id] = (viewsByPaywall[row.paywall_id] ?? 0) + 1
+        }
+        // Override views where we have impression data
+        for (const pw of paywallList) {
+          if (viewsByPaywall[pw.id] !== undefined) {
+            pw.views = viewsByPaywall[pw.id]
+          }
+        }
+      }
+    }
+
+    setPaywalls(paywallList)
     setLoading(false)
   }
 

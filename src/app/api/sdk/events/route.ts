@@ -7,6 +7,9 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type",
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Supa = any
+
 // Public endpoint — receives events from the Hatch SDK
 export async function POST(request: NextRequest) {
   const body = await request.json()
@@ -16,7 +19,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Missing required fields" }, { status: 400, headers: CORS_HEADERS })
   }
 
-  const supabase = createServiceClient(
+  const supabase: Supa = createServiceClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   )
@@ -28,33 +31,53 @@ export async function POST(request: NextRequest) {
     .single()
   if (!user) return NextResponse.json({ error: "Invalid API key" }, { status: 401, headers: CORS_HEADERS })
 
-  console.log(`[sdk/events] Received: ${event} for account ${user.account_id}${paywallId ? ` paywall ${paywallId}` : ""}`)
+  console.log(`[sdk/events] ${event} | account=${user.account_id}${paywallId ? ` paywall=${paywallId}` : ""}${sessionId ? ` session=${sessionId.slice(0,8)}` : ""}`)
 
-  // Resilient insert — drop optional columns on PGRST204 and retry
+  // ─── Vercel geo enrichment ─────────────────────────────────────────────────
+  const geo = {
+    country:  request.headers.get("x-vercel-ip-country")         ?? null,
+    region:   request.headers.get("x-vercel-ip-country-region")  ?? null,
+    city:     request.headers.get("x-vercel-ip-city")            ?? null,
+    timezone: request.headers.get("x-vercel-ip-timezone")        ?? null,
+  }
+
+  // ─── Resilient event insert ────────────────────────────────────────────────
   const CRITICAL_EVENT_FIELDS = ["account_id", "event_type"]
   const insertPayload: Record<string, unknown> = {
-    account_id: user.account_id,
-    event_type: event,
-    user_id_external: userId ?? null,
-    session_id: sessionId ?? null,
-    paywall_id: paywallId ?? null,
-    ip: request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip"),
-    user_agent: request.headers.get("user-agent"),
-    properties: { ...(properties ?? {}), variant_id: variantId ?? null },
+    account_id:       user.account_id,
+    event_type:       event,
+    user_id_external: userId   ?? null,
+    session_id:       sessionId ?? null,
+    paywall_id:       paywallId ?? null,
+    ip:               request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip"),
+    user_agent:       request.headers.get("user-agent"),
+    properties:       { ...(properties ?? {}), variant_id: variantId ?? null, ...geo },
   }
 
   for (let attempt = 0; attempt < 10; attempt++) {
     const { error: insertError } = await supabase.from("events").insert(insertPayload)
     if (!insertError) break
-    const colMatch = insertError.message?.match(/Could not find the '([a-z_]+)' column/i)
-    const col = colMatch?.[1]
+    const col = insertError.message?.match(/Could not find the '([a-z_]+)' column/i)?.[1]
     if (col && !CRITICAL_EVENT_FIELDS.includes(col) && col in insertPayload) {
-      console.warn(`[sdk/events] Column '${col}' missing in DB — dropping it`)
+      console.warn(`[sdk/events] Column '${col}' missing — dropping`)
       delete insertPayload[col]
       continue
     }
     console.error(`[sdk/events] Insert failed: ${insertError.message}`)
     break
+  }
+
+  // ─── paywall_impressions upsert ───────────────────────────────────────────
+  if (paywallId && sessionId) {
+    await upsertImpression(supabase, event, {
+      account_id:       user.account_id,
+      paywall_id:       paywallId,
+      session_id:       sessionId,
+      user_id_external: userId ?? null,
+      variant_id:       variantId ?? null,
+      properties:       properties ?? {},
+      geo,
+    })
   }
 
   // ─── price posterior: paywall_shown → impression ─────────────────────────
@@ -70,10 +93,6 @@ export async function POST(request: NextRequest) {
         .upsert({ price_candidate_id: assignment.price_candidate_id, segment_hash: segHash,
                   alpha: 1, beta: 1, impressions: 0, conversions: 0, revenue_cents: 0 },
                  { onConflict: "price_candidate_id,segment_hash", ignoreDuplicates: true })
-      await supabase.rpc
-        ? null  // RPC not used here; plain update instead
-        : null
-      // Increment impressions + beta (miss prior)
       const { data: pp } = await supabase
         .from("price_point_posteriors")
         .select("impressions, beta")
@@ -89,14 +108,16 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // ─── paywall_shown ────────────────────────────────────────────────────────
+  // ─── paywall_shown: increment counters ────────────────────────────────────
   if (event === "paywall_shown" && paywallId) {
-    const { data: pw } = await supabase.from("paywalls").select("views").eq("id", paywallId).single()
-    if (pw) await supabase.from("paywalls").update({ views: (pw.views ?? 0) + 1 }).eq("id", paywallId)
+    // Resilient views increment — ignore if column missing
+    try {
+      const { data: pw } = await supabase.from("paywalls").select("views").eq("id", paywallId).single()
+      if (pw) await supabase.from("paywalls").update({ views: (pw.views ?? 0) + 1 }).eq("id", paywallId)
+    } catch { /* column may be missing — non-fatal, impressions table is source of truth */ }
 
     const resolvedVariantId = variantId ?? await lookupVariantId(supabase, paywallId, sessionId)
     if (resolvedVariantId) {
-      // Global posterior: view is a "miss" (beta += 1)
       const { data: v } = await supabase
         .from("paywall_variants")
         .select("views, posterior_beta")
@@ -109,7 +130,6 @@ export async function POST(request: NextRequest) {
         }).eq("id", resolvedVariantId)
       }
 
-      // Segment-level posterior update
       const segmentHash = await lookupSegmentHash(supabase, paywallId, sessionId)
       if (segmentHash) {
         const { data: sp } = await supabase
@@ -160,11 +180,10 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // ─── payment_success ──────────────────────────────────────────────────────
+  // ─── payment_success: variant posteriors ──────────────────────────────────
   if (event === "payment_success" && paywallId) {
     const resolvedVariantId = variantId ?? await lookupVariantId(supabase, paywallId, sessionId)
     if (resolvedVariantId) {
-      // Global posterior: conversion (alpha += 1, rebalance beta)
       const { data: v } = await supabase
         .from("paywall_variants")
         .select("conversions, posterior_alpha, posterior_beta")
@@ -178,7 +197,6 @@ export async function POST(request: NextRequest) {
         }).eq("id", resolvedVariantId)
       }
 
-      // Segment-level conversion
       const segmentHash = await lookupSegmentHash(supabase, paywallId, sessionId)
       if (segmentHash) {
         const { data: sp } = await supabase
@@ -202,7 +220,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Mark assignment as converted
     if (sessionId && paywallId) {
       await supabase.from("variant_assignments")
         .update({ converted_at: new Date().toISOString() })
@@ -215,12 +232,143 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ ok: true }, { headers: CORS_HEADERS })
 }
 
-async function lookupVariantId(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  supabase: any,
-  paywallId: string,
-  sessionId: string | null
-): Promise<string | null> {
+// ─── paywall_impressions maintenance ─────────────────────────────────────────
+
+async function upsertImpression(
+  supabase: Supa,
+  event: string,
+  ctx: {
+    account_id: string
+    paywall_id: string
+    session_id: string
+    user_id_external: string | null
+    variant_id: string | null
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    properties: Record<string, any>
+    geo: { country: string | null; region: string | null; city: string | null; timezone: string | null }
+  }
+) {
+  const p = ctx.properties
+  const now = new Date().toISOString()
+
+  try {
+    if (event === "paywall_shown") {
+      // Full upsert — insert on first impression
+      const row: Record<string, unknown> = {
+        account_id:       ctx.account_id,
+        paywall_id:       ctx.paywall_id,
+        session_id:       ctx.session_id,
+        user_id_external: ctx.user_id_external,
+        // Context
+        device_type:     p.device_type   ?? p.device ?? null,
+        os:              p.os             ?? null,
+        browser:         p.browser        ?? null,
+        viewport_w:      p.viewport_w     ?? null,
+        viewport_h:      p.viewport_h     ?? null,
+        utm_source:      p.utm_source     ?? null,
+        utm_medium:      p.utm_medium     ?? null,
+        utm_campaign:    p.utm_campaign   ?? null,
+        utm_content:     p.utm_content    ?? null,
+        utm_term:        p.utm_term       ?? null,
+        referrer:        p.referrer        ?? null,
+        referrer_domain: p.referrer_domain ?? null,
+        landing_page:    p.landing_page    ?? null,
+        language:        p.language        ?? null,
+        hour_of_day:     p.hour_of_day     ?? (p.hour_bucket ? null : null),
+        day_of_week:     p.day_of_week     ?? null,
+        is_weekend:      p.is_weekend      ?? null,
+        is_returning:    p.is_returning    ?? p.returning ?? null,
+        session_count:   p.session_count   ?? null,
+        segment_hash:    p.segment_hash    ?? null,
+        // Geo (server-side)
+        country:  ctx.geo.country,
+        region:   ctx.geo.region,
+        city:     ctx.geo.city,
+        timezone: ctx.geo.timezone,
+        // Exposition
+        variant_id:        ctx.variant_id ?? null,
+        price_shown_cents: p.price_shown_cents ?? null,
+        interval_shown:    p.interval_shown ?? null,
+        trigger_type:      p.trigger_type  ?? null,
+        shown_at:          now,
+        updated_at:        now,
+      }
+      // Resilient upsert — drop unknown columns on conflict
+      for (let attempt = 0; attempt < 15; attempt++) {
+        const { error } = await supabase
+          .from("paywall_impressions")
+          .upsert(row, { onConflict: "paywall_id,session_id", ignoreDuplicates: false })
+        if (!error) return
+        // Table not yet created — skip silently
+        if (error.message?.includes("does not exist") || error.message?.includes("relation")) return
+        const col = error.message?.match(/Could not find the '([a-z_]+)' column/i)?.[1]
+        if (col && col in row) { delete row[col]; continue }
+        console.warn(`[sdk/events] impression upsert failed: ${error.message}`)
+        return
+      }
+      return
+    }
+
+    // For all other events — update the existing row if it exists
+    const updates: Record<string, unknown> = { updated_at: now }
+
+    if (event === "billing_toggle_changed") {
+      updates.toggled_billing = true
+    } else if (event === "scroll_depth" && typeof p.percent === "number") {
+      // Fetch current max and compare
+      const { data: row } = await supabase
+        .from("paywall_impressions")
+        .select("scroll_depth_max")
+        .eq("paywall_id", ctx.paywall_id)
+        .eq("session_id", ctx.session_id)
+        .maybeSingle()
+      updates.scroll_depth_max = Math.max(row?.scroll_depth_max ?? 0, p.percent)
+    } else if (event === "plan_hovered" && p.plan_id) {
+      const { data: row } = await supabase
+        .from("paywall_impressions")
+        .select("hovered_plans")
+        .eq("paywall_id", ctx.paywall_id)
+        .eq("session_id", ctx.session_id)
+        .maybeSingle()
+      const existing: string[] = Array.isArray(row?.hovered_plans) ? row.hovered_plans : []
+      if (!existing.includes(p.plan_id)) {
+        updates.hovered_plans = [...existing, p.plan_id]
+      } else {
+        return // no change
+      }
+    } else if (event === "checkout_started") {
+      updates.reached_checkout = true
+    } else if (event === "paywall_dismissed") {
+      updates.dismissed     = true
+      updates.dismiss_method = p.method ?? null
+      updates.dwell_ms      = p.dwell_ms ?? null
+    } else if (event === "quiz_completed") {
+      updates.quiz_completed = true
+      updates.quiz_answers   = p.answers ?? {}
+    } else if (event === "payment_success") {
+      updates.converted    = true
+      updates.converted_at = now
+      updates.revenue_cents = p.amount_cents ?? p.price_shown_cents ?? null
+      updates.plan_id      = p.plan_id ?? null
+    } else {
+      return // no impression update needed
+    }
+
+    await supabase
+      .from("paywall_impressions")
+      .update(updates)
+      .eq("paywall_id", ctx.paywall_id)
+      .eq("session_id", ctx.session_id)
+
+  } catch (err) {
+    // Entirely non-fatal — table may not exist yet
+    console.warn("[sdk/events] impression update skipped:", err instanceof Error ? err.message : err)
+  }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+async function lookupVariantId(supabase: Supa, paywallId: string, sessionId: string | null): Promise<string | null> {
   if (!sessionId) return null
   const { data } = await supabase
     .from("variant_assignments")
@@ -231,12 +379,7 @@ async function lookupVariantId(
   return data?.variant_id ?? null
 }
 
-async function lookupSegmentHash(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  supabase: any,
-  paywallId: string,
-  sessionId: string | null
-): Promise<string | null> {
+async function lookupSegmentHash(supabase: Supa, paywallId: string, sessionId: string | null): Promise<string | null> {
   if (!sessionId) return null
   const { data } = await supabase
     .from("variant_assignments")

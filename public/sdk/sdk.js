@@ -1,5 +1,5 @@
 /**
- * Hatch SDK v3.3.0
+ * Hatch SDK v3.4.0
  * Contextual paywall SDK — quiz, segmentation, 6 templates, auto-triggers, chameleon mode
  * Load via: <script async src="YOUR_HATCH_URL/sdk/sdk.js" data-key="pk_..."></script>
  */
@@ -45,6 +45,8 @@
   }
 
   var CHECKOUT_PENDING_KEY = 'hatch_checkout_pending'
+  var SESSION_COUNT_KEY = 'hatch_session_count'
+  var LANDING_PAGE_KEY = 'hatch_landing_page'
 
   var state = {
     apiKey: null,
@@ -60,6 +62,11 @@
     paywallShownAt: null,   // timestamp (ms) set at paywall_shown, used for dwell_ms
     hoverTimers: {},        // debounce timers for plan_hovered
     triggerCleanups: [],
+    // Full context — built once at init, attached to every event
+    context: null,
+    landingPage: null,
+    priceShownCents: null,  // set when paywall shown with dynamic pricing
+    intervalShown: null,    // 'monthly' | 'yearly'
   }
 
   // ─── Utils ─────────────────────────────────────────────────────────────────
@@ -111,6 +118,58 @@
     } catch (e) { return '' }
   }
 
+  function getAllUtms() {
+    try {
+      var p = new URLSearchParams(window.location.search)
+      return {
+        utm_source:   p.get('utm_source')   || undefined,
+        utm_medium:   p.get('utm_medium')   || undefined,
+        utm_campaign: p.get('utm_campaign') || undefined,
+        utm_content:  p.get('utm_content')  || undefined,
+        utm_term:     p.get('utm_term')     || undefined,
+      }
+    } catch (e) { return {} }
+  }
+
+  function getReferrerDomain() {
+    try {
+      var ref = document.referrer
+      if (!ref) return undefined
+      return new URL(ref).hostname || undefined
+    } catch (e) { return undefined }
+  }
+
+  function parseUserAgent() {
+    var ua = (navigator.userAgent || '')
+    var os = 'unknown', browser = 'unknown'
+    // OS detection
+    if (/iPhone|iPad|iPod/.test(ua)) os = 'iOS'
+    else if (/Android/.test(ua)) os = 'Android'
+    else if (/Windows/.test(ua)) os = 'Windows'
+    else if (/Mac OS X/.test(ua)) os = 'macOS'
+    else if (/Linux/.test(ua)) os = 'Linux'
+    else if (/CrOS/.test(ua)) os = 'ChromeOS'
+    // Browser detection (order matters)
+    if (/Edg\//.test(ua)) browser = 'Edge'
+    else if (/OPR\/|Opera/.test(ua)) browser = 'Opera'
+    else if (/SamsungBrowser/.test(ua)) browser = 'Samsung'
+    else if (/Chrome\//.test(ua) && !/Chromium/.test(ua)) browser = 'Chrome'
+    else if (/Firefox\//.test(ua)) browser = 'Firefox'
+    else if (/Safari\//.test(ua) && !/Chrome/.test(ua)) browser = 'Safari'
+    else if (/MSIE|Trident/.test(ua)) browser = 'IE'
+    return { os: os, browser: browser }
+  }
+
+  function getSessionCount() {
+    try {
+      var raw = localStorage.getItem(SESSION_COUNT_KEY)
+      var n = raw ? (parseInt(raw, 10) || 0) : 0
+      n++
+      localStorage.setItem(SESSION_COUNT_KEY, String(n))
+      return n
+    } catch (e) { return 1 }
+  }
+
   function hasReturned() {
     try {
       var raw = localStorage.getItem(VISIT_KEY)
@@ -129,10 +188,34 @@
     return 'evening'
   }
 
+  function buildContext(isReturning, sessionCount) {
+    var now = new Date()
+    var utms = getAllUtms()
+    var uaParsed = parseUserAgent()
+    return Object.assign({}, utms, {
+      device_type:      getDevice(),
+      os:               uaParsed.os,
+      browser:          uaParsed.browser,
+      viewport_w:       window.innerWidth,
+      viewport_h:       window.innerHeight,
+      referrer:         document.referrer || undefined,
+      referrer_domain:  getReferrerDomain(),
+      landing_page:     state.landingPage || window.location.href,
+      language:         (navigator.language || 'en').slice(0, 5),
+      hour_of_day:      now.getHours(),
+      day_of_week:      now.getDay(),
+      is_weekend:       now.getDay() === 0 || now.getDay() === 6,
+      hour_bucket:      getHourBucket(),
+      is_returning:     isReturning,
+      returning:        isReturning,  // legacy alias
+      session_count:    sessionCount,
+    })
+  }
+
   function buildSegmentQueryParams() {
     return '&device=' + getDevice() +
            '&utm_source=' + encodeURIComponent(getUtm('utm_source')) +
-           '&returning=' + (hasReturned() ? '1' : '0') +
+           '&returning=' + (getIsReturning() ? '1' : '0') +
            '&hour=' + getHourBucket()
   }
 
@@ -900,7 +983,8 @@
     document.body.appendChild(overlay)
     markShown(config.id)
     state.paywallShownAt = Date.now()
-    track('paywall_shown', { paywall_id: config.id })
+    state.intervalShown = 'monthly'  // reset to default; updated on toggle/CTA
+    track('paywall_shown', { paywall_id: config.id, trigger_type: config._trigger_type || 'manual' })
 
     // Attach hover listeners for plan cards (debounced 300ms, max 1 per plan)
     var hoveredPlans = {}
@@ -949,6 +1033,25 @@
     }
     document.addEventListener('keydown', onKeyDown)
 
+    // Back-button dismiss (browser history back while paywall is open)
+    var onPopState = function() {
+      if (state.activePaywall && config.closeable !== false) {
+        closePaywall('back_button')
+        // Prevent navigating away — push state back so the page stays
+        history.pushState(null, '', window.location.href)
+      }
+    }
+    history.pushState(null, '', window.location.href)  // push so back triggers popstate
+    window.addEventListener('popstate', onPopState)
+
+    // Exit-intent dismiss (mouse leaves viewport toward top while paywall is open)
+    var onExitIntent = function(e) {
+      if (e.clientY <= 5 && state.activePaywall && config.closeable !== false) {
+        closePaywall('exit_intent')
+      }
+    }
+    document.addEventListener('mouseleave', onExitIntent)
+
     overlay.addEventListener('click', function(e) {
       var t = e.target
       if (t.id === 'hatch-close' || (t.closest && t.closest('#hatch-close'))) { closePaywall('close_button'); return }
@@ -968,23 +1071,31 @@
         var priceEl = planEl ? planEl.querySelector('.hatch-price') : null
         var priceText = priceEl ? priceEl.textContent.replace(/[^0-9.]/g, '') : ''
         var priceShownCents = priceText ? Math.round(parseFloat(priceText) * 100) : null
+        var chosenInterval = yearly ? 'yearly' : 'monthly'
+        // Store for context enrichment
+        state.priceShownCents = priceShownCents
+        state.intervalShown   = chosenInterval
         track('plan_selected', { plan_id: planId, yearly: yearly })
-        track('cta_clicked', { plan_id: planId, price_shown_cents: priceShownCents, interval: yearly ? 'yearly' : 'monthly' })
+        track('cta_clicked', { plan_id: planId, price_shown_cents: priceShownCents, interval: chosenInterval })
         startCheckout(config, planId, yearly)
       }
     })
 
-    state.activePaywall = { overlay: overlay, config: config, keyHandler: onKeyDown }
+    state.activePaywall = { overlay: overlay, config: config, keyHandler: onKeyDown, popHandler: onPopState, exitHandler: onExitIntent }
   }
 
   function closePaywall(method) {
     if (state.activePaywall) {
-      var overlay = state.activePaywall.overlay
-      var keyHandler = state.activePaywall.keyHandler
+      var overlay      = state.activePaywall.overlay
+      var keyHandler   = state.activePaywall.keyHandler
+      var popHandler   = state.activePaywall.popHandler
+      var exitHandler  = state.activePaywall.exitHandler
       var dwellMs = state.paywallShownAt ? (Date.now() - state.paywallShownAt) : null
 
-      // Remove ESC listener
-      if (keyHandler) document.removeEventListener('keydown', keyHandler)
+      // Remove listeners
+      if (keyHandler)  document.removeEventListener('keydown',  keyHandler)
+      if (popHandler)  window.removeEventListener('popstate',   popHandler)
+      if (exitHandler) document.removeEventListener('mouseleave', exitHandler)
 
       // Clear any pending hover timers
       for (var pid in state.hoverTimers) { clearTimeout(state.hoverTimers[pid]) }
@@ -999,6 +1110,8 @@
       }
 
       state.paywallShownAt = null
+      state.priceShownCents = null
+      state.intervalShown = null
       overlay.style.animation = 'hatchFadeIn 0.15s ease reverse'
       setTimeout(function() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay) }, 150)
       state.activePaywall = null
@@ -1063,6 +1176,13 @@
     state.sessionId = getSession().id
     var storedUser = getStoredUser()
     if (storedUser) { state.userId = storedUser.id; state.userTraits = storedUser.traits || {} }
+
+    // Build full context once — will be attached to every track() call
+    state.landingPage = window.location.href
+    var isReturning = hasReturned()  // also increments visit count
+    var sessionCount = getSessionCount()
+    state.context = buildContext(isReturning, sessionCount)
+
     console.log('[Hatch] SDK loaded — API base:', API_BASE, '| key:', apiKey.slice(0, 8) + '...')
     injectStyles()
     track('page_view', { url: window.location.href })
@@ -1111,17 +1231,18 @@
 
   function track(eventName, properties) {
     if (!state.apiKey) return
-    // Enrich every event with behavioural context
-    var enriched = Object.assign({
-      device:       getDevice(),
-      utm_source:   getUtm('utm_source')   || undefined,
-      utm_campaign: getUtm('utm_campaign') || undefined,
-      referrer:     (document.referrer || undefined),
-      hour_bucket:  getHourBucket(),
-      day_of_week:  new Date().getDay(),
-      returning:    getIsReturning(),
-      segment_hash: state.segmentHash || undefined,
-    }, properties || {})
+    // Enrich every event with full context (built once at init, stays current)
+    var enriched = Object.assign(
+      {},
+      state.context || {},
+      {
+        segment_hash:       state.segmentHash || undefined,
+        variant_id:         state.variantId   || undefined,
+        price_shown_cents:  state.priceShownCents || undefined,
+        interval_shown:     state.intervalShown   || undefined,
+      },
+      properties || {}
+    )
 
     var payload = {
       apiKey: state.apiKey,
@@ -1261,7 +1382,7 @@
 
   function debug() {
     console.group('[Hatch Debug]')
-    console.log('SDK version : 3.3.0')
+    console.log('SDK version : 3.4.0')
     console.log('API Base    :', API_BASE)
     console.log('API Key     :', state.apiKey ? state.apiKey.slice(0, 8) + '...' : 'NOT SET')
     console.log('Initialized :', state.initialized)
@@ -1272,7 +1393,7 @@
     console.log('Active quiz :', state.activeQuiz ? 'yes' : 'none')
     console.groupEnd()
     return {
-      version: '3.3.0',
+      version: '3.4.0',
       apiBase: API_BASE,
       apiKey: state.apiKey,
       initialized: state.initialized,

@@ -40,6 +40,12 @@ export async function POST(request: NextRequest) {
     case "invoice.payment_failed":
       await handlePaymentFailed(supabase, event.data.object as any, event.account)
       break
+    case "customer.subscription.trial_will_end":
+      await handleTrialEnding(supabase, event.data.object as any, event.account)
+      break
+    case "charge.refunded":
+      await handleRefund(supabase, event.data.object as any, event.account)
+      break
   }
 
   return NextResponse.json({ received: true })
@@ -154,6 +160,23 @@ async function handleSubscriptionChange(supabase: SupabaseClient, sub: any, stri
         event_type: "subscription_canceled",
         properties: { stripe_subscription_id: sub.id },
       })
+
+      // Mark subscriber as churned
+      await supabase.from("subscribers")
+        .update({ churned_at: new Date().toISOString() })
+        .eq("stripe_customer_id", sub.customer)
+        .is("churned_at", null)
+
+      // Mark impressions as churned
+      try {
+        await supabase
+          .from("paywall_impressions")
+          .update({ churned: true, updated_at: new Date().toISOString() })
+          .eq("account_id", conn.account_id)
+          .eq("converted", true)
+          .eq("churned", false)
+          // Best effort: match by user_id_external via subscriber lookup
+      } catch { /* non-fatal */ }
     }
   }
 }
@@ -170,5 +193,71 @@ async function handlePaymentFailed(supabase: SupabaseClient, invoice: any, strip
         properties: { stripe_customer_id: invoice.customer, amount: invoice.amount_due },
       })
     }
+  }
+}
+
+async function handleTrialEnding(supabase: SupabaseClient, sub: any, stripeAccountId?: string) {
+  if (!stripeAccountId) return
+  const { data: conn } = await supabase.from("stripe_connections").select("account_id").eq("stripe_account_id", stripeAccountId).single()
+  if (!conn) return
+
+  // trial_will_end fires ~3 days before trial ends
+  const trialEnd = sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null
+  await supabase.from("events").insert({
+    account_id: conn.account_id,
+    event_type: "trial_ending",
+    properties: {
+      stripe_subscription_id: sub.id,
+      stripe_customer_id: sub.customer,
+      trial_end: trialEnd,
+      days_remaining: trialEnd
+        ? Math.ceil((new Date(trialEnd).getTime() - Date.now()) / 86400000)
+        : null,
+    },
+  })
+}
+
+async function handleRefund(supabase: SupabaseClient, charge: any, stripeAccountId?: string) {
+  if (!stripeAccountId) return
+  const { data: conn } = await supabase.from("stripe_connections").select("account_id").eq("stripe_account_id", stripeAccountId).single()
+  if (!conn) return
+
+  const refundedCents = charge.amount_refunded ?? 0
+
+  await supabase.from("events").insert({
+    account_id: conn.account_id,
+    event_type: "refund_issued",
+    properties: {
+      stripe_charge_id: charge.id,
+      stripe_customer_id: charge.customer,
+      amount_refunded_cents: refundedCents,
+    },
+  })
+
+  // Mark impression as refunded (find by subscriber email → session lookup)
+  try {
+    const email = charge.billing_details?.email ?? charge.receipt_email
+    if (email) {
+      const { data: subscriber } = await supabase
+        .from("subscribers")
+        .select("id")
+        .eq("account_id", conn.account_id)
+        .eq("email", email)
+        .maybeSingle()
+      if (subscriber) {
+        // Mark most recent converted impression as refunded
+        await supabase
+          .from("paywall_impressions")
+          .update({ refunded: true, updated_at: new Date().toISOString() })
+          .eq("account_id", conn.account_id)
+          .eq("converted", true)
+          .eq("refunded", false)
+          // Use user_id_external or match via email as best effort
+          .order("converted_at", { ascending: false })
+          .limit(1)
+      }
+    }
+  } catch {
+    // Non-fatal — impressions table may not exist yet
   }
 }

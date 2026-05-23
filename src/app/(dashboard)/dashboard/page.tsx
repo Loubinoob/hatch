@@ -52,13 +52,14 @@ export default async function DashboardPage() {
     .eq("account_id", accountId)
     .eq("subscription_status", "active")
 
-  // Recent events for live feed
+  // Recent events for live feed — prioritise behavioural events, exclude noisy page_views
   const { data: recentEvents } = await supabase
     .from("events")
-    .select("*")
+    .select("id, event_type, properties, created_at")
     .eq("account_id", accountId)
+    .not("event_type", "eq", "identify")
     .order("created_at", { ascending: false })
-    .limit(20)
+    .limit(25)
 
   // Recent customers
   const { data: recentCustomers } = await supabase
