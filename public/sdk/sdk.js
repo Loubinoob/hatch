@@ -1,5 +1,5 @@
 /**
- * Hatch SDK v3.1.0
+ * Hatch SDK v3.2.0
  * Contextual paywall SDK — quiz, segmentation, 6 templates, auto-triggers, chameleon mode
  * Load via: <script async src="YOUR_HATCH_URL/sdk/sdk.js" data-key="pk_..."></script>
  */
@@ -901,6 +901,7 @@
   }
 
   async function startCheckout(config, planId, yearly) {
+    console.log('[Hatch] CTA clicked — plan:', planId, '| yearly:', !!yearly)
     track('checkout_started', { plan_id: planId })
     var successUrl = config.success_redirect_url ||
       (window.location.href + (window.location.href.includes('?') ? '&' : '?') + 'hatch_success=1')
@@ -908,11 +909,27 @@
       var res = await fetch(API_BASE + '/stripe/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paywallId: config.id, planId: planId, userId: state.userId, email: state.userTraits.email, successUrl: successUrl, cancelUrl: window.location.href, yearly: yearly }),
+        body: JSON.stringify({ paywallId: config.id, planId: planId, userId: state.userId, email: state.userTraits.email, successUrl: successUrl, cancelUrl: window.location.href, yearly: !!yearly }),
       })
       var data = await res.json()
-      if (data.url) window.location.href = data.url
-    } catch (e) { console.error('[Hatch] Checkout error:', e) }
+      if (data.url) {
+        console.log('[Hatch] Redirecting to Stripe Checkout…')
+        window.location.href = data.url
+      } else {
+        console.error('[Hatch] Checkout failed — no redirect URL returned.', data.error || data)
+      }
+    } catch (e) { console.error('[Hatch] Checkout network error:', e) }
+  }
+
+  // ─── Heartbeat ─────────────────────────────────────────────────────────────
+
+  function sendHeartbeat() {
+    if (!state.apiKey) return
+    fetch(API_BASE + '/sdk/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: state.apiKey }),
+    }).catch(function() {})
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────
@@ -932,6 +949,9 @@
     track('page_view', { url: window.location.href })
     if (window.location.search.includes('hatch_success=1')) fetchSubscription()
     state.initialized = true
+    // Heartbeat: signal SDK presence to the dashboard immediately and every 60s
+    sendHeartbeat()
+    setInterval(sendHeartbeat, 60000)
   }
 
   function identify(userId, traits) {
@@ -1081,7 +1101,7 @@
 
   function debug() {
     console.group('[Hatch Debug]')
-    console.log('SDK version : 3.1.0')
+    console.log('SDK version : 3.2.0')
     console.log('API Base    :', API_BASE)
     console.log('API Key     :', state.apiKey ? state.apiKey.slice(0, 8) + '...' : 'NOT SET')
     console.log('Initialized :', state.initialized)
@@ -1092,7 +1112,7 @@
     console.log('Active quiz :', state.activeQuiz ? 'yes' : 'none')
     console.groupEnd()
     return {
-      version: '3.1.0',
+      version: '3.2.0',
       apiBase: API_BASE,
       apiKey: state.apiKey,
       initialized: state.initialized,
@@ -1151,7 +1171,7 @@
   }
 
   // Expose a sentinel on window so integration tools can detect SDK presence
-  try { window.__hatch = { ready: true, version: '3.1.0' } } catch (e) {}
+  try { window.__hatch = { ready: true, version: '3.2.0' } } catch (e) {}
 
   return api
 })

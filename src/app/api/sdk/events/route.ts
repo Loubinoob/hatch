@@ -28,8 +28,11 @@ export async function POST(request: NextRequest) {
     .single()
   if (!user) return NextResponse.json({ error: "Invalid API key" }, { status: 401, headers: CORS_HEADERS })
 
-  // Store the event
-  await supabase.from("events").insert({
+  console.log(`[sdk/events] Received: ${event} for account ${user.account_id}${paywallId ? ` paywall ${paywallId}` : ""}`)
+
+  // Resilient insert — drop optional columns on PGRST204 and retry
+  const CRITICAL_EVENT_FIELDS = ["account_id", "event_type"]
+  const insertPayload: Record<string, unknown> = {
     account_id: user.account_id,
     event_type: event,
     user_id_external: userId ?? null,
@@ -38,7 +41,21 @@ export async function POST(request: NextRequest) {
     ip: request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip"),
     user_agent: request.headers.get("user-agent"),
     properties: { ...(properties ?? {}), variant_id: variantId ?? null },
-  })
+  }
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const { error: insertError } = await supabase.from("events").insert(insertPayload)
+    if (!insertError) break
+    const colMatch = insertError.message?.match(/Could not find the '([a-z_]+)' column/i)
+    const col = colMatch?.[1]
+    if (col && !CRITICAL_EVENT_FIELDS.includes(col) && col in insertPayload) {
+      console.warn(`[sdk/events] Column '${col}' missing in DB — dropping it`)
+      delete insertPayload[col]
+      continue
+    }
+    console.error(`[sdk/events] Insert failed: ${insertError.message}`)
+    break
+  }
 
   // ─── paywall_shown ────────────────────────────────────────────────────────
   if (event === "paywall_shown" && paywallId) {

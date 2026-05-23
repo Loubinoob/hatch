@@ -15,74 +15,99 @@ export async function OPTIONS() {
 }
 
 export async function POST(request: NextRequest) {
-  const stripe = getStripe()
-  const { paywallId, planId, userId, email, successUrl, cancelUrl } = await request.json()
+  try {
+    const stripe = getStripe()
+    const body = await request.json()
+    const { paywallId, planId, userId, email, successUrl, cancelUrl, yearly } = body
 
-  if (!planId || !successUrl) {
-    return NextResponse.json({ error: "Missing required fields" }, { status: 400, headers: CORS })
-  }
+    console.log(`[stripe/checkout] Request — planId: ${planId}, yearly: ${!!yearly}, user: ${userId ?? "anon"}`)
 
-  // Use service client — called from external SDK without a user session
-  const supabase = createServiceClient()
+    if (!planId || !successUrl) {
+      return NextResponse.json({ error: "Missing required fields: planId and successUrl" }, { status: 400, headers: CORS })
+    }
 
-  const { data: plan } = await supabase
-    .from("plans")
-    .select("*, accounts(id)")
-    .eq("id", planId)
-    .single()
+    // Use service client — called from external SDK without a user session
+    const supabase = createServiceClient()
 
-  if (!plan) return NextResponse.json({ error: "Plan not found" }, { status: 404, headers: CORS })
+    // Fetch plan (forward FK: plans.account_id → accounts, so accounts(id) resolves)
+    const { data: plan } = await supabase
+      .from("plans")
+      .select("*, accounts(id)")
+      .eq("id", planId)
+      .single()
 
-  const { data: conn } = await supabase
-    .from("stripe_connections")
-    .select("stripe_account_id")
-    .eq("account_id", (plan.accounts as { id: string }).id)
-    .single()
+    if (!plan) {
+      console.error(`[stripe/checkout] Plan not found: ${planId}`)
+      return NextResponse.json({ error: "Plan not found" }, { status: 404, headers: CORS })
+    }
 
-  if (!conn) return NextResponse.json({ error: "Stripe not connected" }, { status: 400, headers: CORS })
+    const accountId = (plan.accounts as { id: string } | null)?.id ?? plan.account_id
+    const { data: conn } = await supabase
+      .from("stripe_connections")
+      .select("stripe_account_id")
+      .eq("account_id", accountId)
+      .single()
 
-  const priceId = plan.stripe_price_id_monthly
-  const amount = plan.price_monthly
+    if (!conn) {
+      console.error(`[stripe/checkout] Stripe not connected for account: ${accountId}`)
+      return NextResponse.json({ error: "Stripe not connected for this account" }, { status: 400, headers: CORS })
+    }
 
-  // Create Stripe checkout session on founder's connected account
-  const session = await stripe.checkout.sessions.create(
-    {
-      mode: "subscription",
-      customer_email: email,
-      line_items: [
-        priceId
-          ? { price: priceId, quantity: 1 }
-          : {
-              price_data: {
-                currency: "usd",
-                product_data: { name: plan.name },
-                unit_amount: amount,
-                recurring: { interval: "month" },
+    // Pick monthly vs yearly pricing
+    const useYearly = !!yearly && (plan.price_yearly ?? 0) > 0
+    const priceId = useYearly
+      ? (plan.stripe_price_id_yearly || plan.stripe_price_id_monthly)
+      : plan.stripe_price_id_monthly
+    const amount = useYearly ? (plan.price_yearly ?? 0) : (plan.price_monthly ?? 0)
+    const billingInterval: "month" | "year" = useYearly ? "year" : "month"
+
+    console.log(`[stripe/checkout] Creating session — plan: "${plan.name}", amount: ${amount}¢, interval: ${billingInterval}, stripeAccount: ${conn.stripe_account_id}`)
+
+    // Create Stripe Checkout session on the founder's connected Stripe account.
+    // NOTE: payment_intent_data is NOT allowed in subscription mode — use
+    // subscription_data.application_fee_percent instead.
+    const session = await stripe.checkout.sessions.create(
+      {
+        mode: "subscription",
+        customer_email: email || undefined,
+        line_items: [
+          priceId
+            ? { price: priceId, quantity: 1 }
+            : {
+                price_data: {
+                  currency: "usd",
+                  product_data: { name: plan.name },
+                  unit_amount: amount,
+                  recurring: { interval: billingInterval },
+                },
+                quantity: 1,
               },
-              quantity: 1,
-            },
-      ],
-      payment_intent_data: {
-        application_fee_amount: Math.round(amount * HATCH_COMMISSION_RATE),
-      },
-      subscription_data: {
-        application_fee_percent: HATCH_COMMISSION_RATE * 100,
+        ],
+        subscription_data: {
+          application_fee_percent: HATCH_COMMISSION_RATE * 100,
+          metadata: {
+            hatch_plan_id: planId,
+            hatch_paywall_id: paywallId ?? "",
+            hatch_user_id: userId ?? "",
+          },
+        },
         metadata: {
           hatch_plan_id: planId,
           hatch_paywall_id: paywallId ?? "",
           hatch_user_id: userId ?? "",
         },
+        success_url: successUrl,
+        cancel_url: cancelUrl ?? successUrl,
       },
-      metadata: {
-        hatch_plan_id: planId,
-        hatch_paywall_id: paywallId ?? "",
-        hatch_user_id: userId ?? "",
-      },
-      success_url: successUrl,
-      cancel_url: cancelUrl ?? successUrl,
-    },
-    { stripeAccount: conn.stripe_account_id }
-  )
+      { stripeAccount: conn.stripe_account_id }
+    )
 
-  return NextResponse.json({ url: session.url }, { headers: CORS })
+    console.log(`[stripe/checkout] Session created: ${session.id}`)
+    return NextResponse.json({ url: session.url }, { headers: CORS })
+
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error("[stripe/checkout] Error:", msg)
+    return NextResponse.json({ error: msg }, { status: 500, headers: CORS })
+  }
 }
