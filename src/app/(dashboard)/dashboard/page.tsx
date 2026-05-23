@@ -128,6 +128,11 @@ export default async function DashboardPage() {
 
   const appName = (profile?.accounts as { app_name?: string } | null)?.app_name ?? "your app"
 
+  // Extract Supabase project ref for the environment badge (e.g. "abcd1234" from "https://abcd1234.supabase.co")
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ""
+  const dbRef = supabaseUrl.match(/https?:\/\/([^.]+)\.supabase/)?.[1] ?? "unknown"
+  const dbEnv = process.env.NODE_ENV === "development" ? "local" : "prod"
+
   return (
     <DashboardClient
       appName={appName}
@@ -141,6 +146,8 @@ export default async function DashboardPage() {
       topPaywall={topPaywall}
       checklist={checklist}
       lastHeartbeat={account?.last_heartbeat_at ?? null}
+      dbRef={dbRef}
+      dbEnv={dbEnv}
     />
   )
 }

@@ -15,6 +15,10 @@ export async function POST(request: NextRequest) {
   const body = await request.json()
   const { apiKey, event, properties, userId, sessionId, paywallId, variantId } = body
 
+  // Log every incoming request immediately — visible in Vercel logs before any DB work
+  const dbRef = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").match(/https?:\/\/([^.]+)\.supabase/)?.[1] ?? "?"
+  console.log(`[sdk/events] incoming event="${event}" hasKey=${!!apiKey} db=${dbRef}`)
+
   if (!apiKey || !event) {
     return NextResponse.json({ error: "Missing required fields" }, { status: 400, headers: CORS_HEADERS })
   }
@@ -29,9 +33,12 @@ export async function POST(request: NextRequest) {
     .select("account_id")
     .eq("api_key", apiKey)
     .single()
-  if (!user) return NextResponse.json({ error: "Invalid API key" }, { status: 401, headers: CORS_HEADERS })
+  if (!user) {
+    console.error(`[sdk/events] ❌ Invalid API key: ${apiKey.slice(0, 8)}... — event "${event}" dropped`)
+    return NextResponse.json({ error: "Invalid API key" }, { status: 401, headers: CORS_HEADERS })
+  }
 
-  console.log(`[sdk/events] ${event} | account=${user.account_id}${paywallId ? ` paywall=${paywallId}` : ""}${sessionId ? ` session=${sessionId.slice(0,8)}` : ""}`)
+  console.log(`[sdk/events] ${event} | account=${user.account_id}${paywallId ? ` paywall=${paywallId}` : ""}${sessionId ? ` session=${sessionId.slice(0,8)}` : ""} db=${dbRef}`)
 
   // ─── Vercel geo enrichment ─────────────────────────────────────────────────
   const geo = {
@@ -54,17 +61,21 @@ export async function POST(request: NextRequest) {
     properties:       { ...(properties ?? {}), variant_id: variantId ?? null, ...geo },
   }
 
+  let insertOk = false
   for (let attempt = 0; attempt < 10; attempt++) {
     const { error: insertError } = await supabase.from("events").insert(insertPayload)
-    if (!insertError) break
+    if (!insertError) { insertOk = true; break }
     const col = insertError.message?.match(/Could not find the '([a-z_]+)' column/i)?.[1]
     if (col && !CRITICAL_EVENT_FIELDS.includes(col) && col in insertPayload) {
-      console.warn(`[sdk/events] Column '${col}' missing — dropping`)
+      console.warn(`[sdk/events] Column '${col}' missing — dropping and retrying`)
       delete insertPayload[col]
       continue
     }
-    console.error(`[sdk/events] Insert failed: ${insertError.message}`)
-    break
+    console.error(`[sdk/events] ❌ Insert failed (code=${insertError.code}): ${insertError.message}`)
+    return NextResponse.json({ ok: false, error: insertError.message, code: insertError.code }, { headers: CORS_HEADERS })
+  }
+  if (insertOk) {
+    console.log(`[sdk/events] ✅ Inserted event="${event}" account=${user.account_id}${paywallId ? ` paywall=${paywallId}` : ""}`)
   }
 
   // ─── paywall_impressions upsert ───────────────────────────────────────────

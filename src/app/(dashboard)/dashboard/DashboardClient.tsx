@@ -49,6 +49,8 @@ interface Props {
   topPaywall: Paywall | null
   checklist: Checklist
   lastHeartbeat: string | null
+  dbRef: string
+  dbEnv: string
 }
 
 const EVENT_LABELS: Record<string, { label: string; color: string }> = {
@@ -81,6 +83,7 @@ const CHECKLIST_ITEMS = [
 export default function DashboardClient({
   appName, mrr, conversions, conversionRate, activeSubscribers,
   recentEvents, recentCustomers, mrrChartData, topPaywall, checklist, lastHeartbeat,
+  dbRef, dbEnv,
 }: Props) {
   const allDone = Object.values(checklist).every(Boolean)
   const completedCount = Object.values(checklist).filter(Boolean).length
@@ -126,19 +129,30 @@ export default function DashboardClient({
           <h1 className="font-heading text-2xl font-semibold text-white mb-1">{appName}</h1>
           <p className="text-sm text-[#71717A]">Here's what's happening with your monetization</p>
         </div>
-        {/* SDK Status badge */}
-        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-medium ${
-          sdkActive
-            ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
-            : checklist.sdk
-            ? "bg-amber-500/10 border-amber-500/20 text-amber-400"
-            : "bg-white/4 border-white/8 text-[#52525B]"
-        }`}>
-          <div className={`w-1.5 h-1.5 rounded-full ${sdkActive ? "bg-emerald-400 animate-pulse" : checklist.sdk ? "bg-amber-400" : "bg-[#3F3F46]"}`} />
-          {sdkActive ? "SDK active" : checklist.sdk
-            ? `Last seen ${formatDistanceToNow(new Date(lastHeartbeat!), { addSuffix: true })}`
-            : "SDK not installed"
-          }
+        <div className="flex items-center gap-2">
+          {/* DB environment badge */}
+          <div title={`Supabase project: ${dbRef}`} className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-mono font-medium ${
+            dbEnv === "local"
+              ? "bg-amber-500/8 border-amber-500/20 text-amber-500/70"
+              : "bg-white/4 border-white/8 text-[#52525B]"
+          }`}>
+            <span className={`w-1 h-1 rounded-full ${dbEnv === "local" ? "bg-amber-500/70" : "bg-[#3F3F46]"}`} />
+            {dbEnv === "local" ? "local·" : "prod·"}{dbRef.slice(0, 8)}
+          </div>
+          {/* SDK Status badge */}
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-medium ${
+            sdkActive
+              ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+              : checklist.sdk
+              ? "bg-amber-500/10 border-amber-500/20 text-amber-400"
+              : "bg-white/4 border-white/8 text-[#52525B]"
+          }`}>
+            <div className={`w-1.5 h-1.5 rounded-full ${sdkActive ? "bg-emerald-400 animate-pulse" : checklist.sdk ? "bg-amber-400" : "bg-[#3F3F46]"}`} />
+            {sdkActive ? "SDK active" : checklist.sdk
+              ? `Last seen ${formatDistanceToNow(new Date(lastHeartbeat!), { addSuffix: true })}`
+              : "SDK not installed"
+            }
+          </div>
         </div>
       </div>
 

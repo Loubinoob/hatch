@@ -32,11 +32,17 @@ export async function GET(request: NextRequest) {
 
   const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 
-  const [{ count: events24h }, { data: lastEvent }] = await Promise.all([
+  const [{ count: events24h }, { count: views24h }, { data: lastEvent }] = await Promise.all([
     supabase
       .from("events")
       .select("*", { count: "exact", head: true })
       .eq("account_id", user.account_id)
+      .gte("created_at", since24h),
+    supabase
+      .from("events")
+      .select("*", { count: "exact", head: true })
+      .eq("account_id", user.account_id)
+      .eq("event_type", "paywall_shown")
       .gte("created_at", since24h),
     supabase
       .from("events")
@@ -50,11 +56,18 @@ export async function GET(request: NextRequest) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const appName = (user.accounts as any)?.app_name ?? null
 
+  // Extract project ref from Supabase URL for cross-env comparison
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ""
+  const dbRef = supabaseUrl.match(/https?:\/\/([^.]+)\.supabase/)?.[1] ?? "unknown"
+
   return NextResponse.json(
     {
       valid: true,
       account: appName,
+      account_id: user.account_id,
+      db_ref: dbRef,
       events_24h: events24h ?? 0,
+      views_24h: views24h ?? 0,
       last_event_type: lastEvent?.event_type ?? null,
       last_event_at: lastEvent?.created_at ?? null,
     },
