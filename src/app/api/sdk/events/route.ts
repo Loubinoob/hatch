@@ -57,6 +57,38 @@ export async function POST(request: NextRequest) {
     break
   }
 
+  // ─── price posterior: paywall_shown → impression ─────────────────────────
+  if (event === "paywall_shown" && sessionId) {
+    const { data: assignment } = await supabase
+      .from("variant_assignments")
+      .select("price_candidate_id, price_shown_cents, segment_hash")
+      .eq("session_id", sessionId)
+      .maybeSingle()
+    if (assignment?.price_candidate_id) {
+      const segHash = assignment.segment_hash ?? "global"
+      await supabase.from("price_point_posteriors")
+        .upsert({ price_candidate_id: assignment.price_candidate_id, segment_hash: segHash,
+                  alpha: 1, beta: 1, impressions: 0, conversions: 0, revenue_cents: 0 },
+                 { onConflict: "price_candidate_id,segment_hash", ignoreDuplicates: true })
+      await supabase.rpc
+        ? null  // RPC not used here; plain update instead
+        : null
+      // Increment impressions + beta (miss prior)
+      const { data: pp } = await supabase
+        .from("price_point_posteriors")
+        .select("impressions, beta")
+        .eq("price_candidate_id", assignment.price_candidate_id)
+        .eq("segment_hash", segHash)
+        .single()
+      if (pp) {
+        await supabase.from("price_point_posteriors")
+          .update({ impressions: (pp.impressions ?? 0) + 1, beta: (pp.beta ?? 1) + 1, updated_at: new Date().toISOString() })
+          .eq("price_candidate_id", assignment.price_candidate_id)
+          .eq("segment_hash", segHash)
+      }
+    }
+  }
+
   // ─── paywall_shown ────────────────────────────────────────────────────────
   if (event === "paywall_shown" && paywallId) {
     const { data: pw } = await supabase.from("paywalls").select("views").eq("id", paywallId).single()
@@ -93,6 +125,37 @@ export async function POST(request: NextRequest) {
             .eq("variant_id", resolvedVariantId)
             .eq("segment_hash", segmentHash)
         }
+      }
+    }
+  }
+
+  // ─── price posterior: payment_success → conversion ───────────────────────
+  if (event === "payment_success" && sessionId) {
+    const { data: assignment } = await supabase
+      .from("variant_assignments")
+      .select("price_candidate_id, price_shown_cents, segment_hash")
+      .eq("session_id", sessionId)
+      .maybeSingle()
+    if (assignment?.price_candidate_id) {
+      const segHash = assignment.segment_hash ?? "global"
+      const priceCents = assignment.price_shown_cents ?? 0
+      const { data: pp } = await supabase
+        .from("price_point_posteriors")
+        .select("conversions, alpha, beta, revenue_cents")
+        .eq("price_candidate_id", assignment.price_candidate_id)
+        .eq("segment_hash", segHash)
+        .single()
+      if (pp) {
+        await supabase.from("price_point_posteriors")
+          .update({
+            conversions:   (pp.conversions ?? 0) + 1,
+            alpha:         (pp.alpha ?? 1) + 1,
+            beta:          Math.max(1, (pp.beta ?? 2) - 1),
+            revenue_cents: (pp.revenue_cents ?? 0) + priceCents,
+            updated_at:    new Date().toISOString(),
+          })
+          .eq("price_candidate_id", assignment.price_candidate_id)
+          .eq("segment_hash", segHash)
       }
     }
   }

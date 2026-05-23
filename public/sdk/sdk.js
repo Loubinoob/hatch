@@ -1,5 +1,5 @@
 /**
- * Hatch SDK v3.2.0
+ * Hatch SDK v3.3.0
  * Contextual paywall SDK — quiz, segmentation, 6 templates, auto-triggers, chameleon mode
  * Load via: <script async src="YOUR_HATCH_URL/sdk/sdk.js" data-key="pk_..."></script>
  */
@@ -44,6 +44,8 @@
     mono: 'ui-monospace,"Cascadia Code","Courier New",monospace',
   }
 
+  var CHECKOUT_PENDING_KEY = 'hatch_checkout_pending'
+
   var state = {
     apiKey: null,
     userId: null,
@@ -54,6 +56,9 @@
     activeQuiz: null,
     initialized: false,
     variantId: null,
+    segmentHash: null,
+    paywallShownAt: null,   // timestamp (ms) set at paywall_shown, used for dwell_ms
+    hoverTimers: {},        // debounce timers for plan_hovered
     triggerCleanups: [],
   }
 
@@ -283,9 +288,29 @@
     var modal = document.createElement('div')
     modal.id = 'hatch-quiz-modal'
     modal.style.setProperty('--hatch-accent', accentColor || '#6366F1')
+
+    // Close button for quiz (tracks abandonment)
+    var closeBtn = document.createElement('button')
+    closeBtn.id = 'hatch-close'
+    closeBtn.textContent = '✕'
+    modal.appendChild(closeBtn)
+
     overlay.appendChild(modal)
     document.body.appendChild(overlay)
     state.activeQuiz = overlay
+
+    track('quiz_started', { question_count: questions.length })
+
+    // Allow closing the quiz
+    overlay.addEventListener('click', function(e) {
+      var t = e.target
+      if (t.id === 'hatch-close' || (t.closest && t.closest('#hatch-close'))) {
+        var lastQ = questions[currentIdx] || questions[questions.length - 1]
+        track('quiz_abandoned', { last_question_id: lastQ ? lastQ.id : null, answered_count: currentIdx })
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay)
+        state.activeQuiz = null
+      }
+    })
 
     function showQuestion(idx) {
       var q = questions[idx]
@@ -313,7 +338,9 @@
 
       modal.querySelectorAll('.hatch-quiz-opt').forEach(function(btn) {
         btn.addEventListener('click', function() {
-          answers[q.id] = btn.getAttribute('data-value')
+          var answer = btn.getAttribute('data-value')
+          answers[q.id] = answer
+          track('quiz_question_answered', { question_id: q.id, answer: answer, question_index: idx })
           currentIdx++
           showQuestion(currentIdx)
         })
@@ -321,13 +348,13 @@
     }
 
     function showCompletion() {
+      track('quiz_completed', { answer_count: Object.keys(answers).length })
       var msg = quiz.completion_message || 'Finding the best plan for you…'
       modal.innerHTML = '<div class="hatch-quiz-completion">' +
         '<div class="hatch-quiz-spinner"></div>' +
         '<p class="hatch-quiz-q" style="padding-right:0">' + esc(msg) + '</p>' +
         '</div>'
       setTimeout(function() {
-        // Remove quiz overlay
         if (overlay.parentNode) overlay.parentNode.removeChild(overlay)
         state.activeQuiz = null
         onComplete(answers)
@@ -872,28 +899,106 @@
     buildAndMount()
     document.body.appendChild(overlay)
     markShown(config.id)
+    state.paywallShownAt = Date.now()
     track('paywall_shown', { paywall_id: config.id })
+
+    // Attach hover listeners for plan cards (debounced 300ms, max 1 per plan)
+    var hoveredPlans = {}
+    function attachHoverListeners() {
+      overlay.querySelectorAll('.hatch-plan[data-plan-id]').forEach(function(el) {
+        var pid = el.getAttribute('data-plan-id')
+        if (!pid || hoveredPlans[pid]) return
+        el.addEventListener('mouseenter', function() {
+          state.hoverTimers[pid] = setTimeout(function() {
+            if (!hoveredPlans[pid]) {
+              hoveredPlans[pid] = true
+              track('plan_hovered', { plan_id: pid })
+            }
+            delete state.hoverTimers[pid]
+          }, 300)
+        })
+        el.addEventListener('mouseleave', function() {
+          if (state.hoverTimers[pid]) { clearTimeout(state.hoverTimers[pid]); delete state.hoverTimers[pid] }
+        })
+      })
+    }
+    attachHoverListeners()
+
+    // Scroll depth for templates with vertical scroll (fullscreen right panel, bottom-sheet)
+    var scrollDepthFired = {}
+    function attachScrollDepth(el) {
+      if (!el) return
+      el.addEventListener('scroll', function() {
+        var h = el.scrollHeight - el.clientHeight
+        if (h <= 0) return
+        var pct = Math.round((el.scrollTop / h) * 100)
+        ;[25, 50, 75, 100].forEach(function(thr) {
+          if (pct >= thr && !scrollDepthFired[thr]) {
+            scrollDepthFired[thr] = true
+            track('scroll_depth', { percent: thr, paywall_id: config.id })
+          }
+        })
+      }, { passive: true })
+    }
+    if (template === 'fullscreen') attachScrollDepth(overlay.querySelector('.hatch-fs-right'))
+    else if (template === 'bottom-sheet') attachScrollDepth(overlay.querySelector('.hatch-bottom-sheet'))
+
+    // ESC key to dismiss
+    var onKeyDown = function(e) {
+      if (e.key === 'Escape' && config.closeable !== false) closePaywall('esc')
+    }
+    document.addEventListener('keydown', onKeyDown)
 
     overlay.addEventListener('click', function(e) {
       var t = e.target
-      if (t.id === 'hatch-close' || (t.closest && t.closest('#hatch-close'))) { closePaywall(); return }
-      if (t === overlay && config.closeable !== false) { closePaywall(); return }
+      if (t.id === 'hatch-close' || (t.closest && t.closest('#hatch-close'))) { closePaywall('close_button'); return }
+      if (t === overlay && config.closeable !== false) { closePaywall('overlay'); return }
       if (t.id === 'hatch-yearly-toggle' || (t.closest && t.closest('#hatch-yearly-toggle'))) {
-        yearly = !yearly; buildAndMount(); return
+        yearly = !yearly
+        track('billing_toggle_changed', { to: yearly ? 'yearly' : 'monthly' })
+        buildAndMount()
+        attachHoverListeners()
+        return
       }
       var btn = (t.dataset && t.dataset.checkout) ? t : (t.closest && t.closest('[data-checkout]'))
       if (btn && btn.dataset) {
-        track('plan_selected', { plan_id: btn.dataset.checkout, yearly: yearly })
-        startCheckout(config, btn.dataset.checkout, yearly)
+        var planId = btn.dataset.checkout
+        // Find the price shown for this plan (read from rendered element)
+        var planEl = btn.closest ? btn.closest('.hatch-plan') : null
+        var priceEl = planEl ? planEl.querySelector('.hatch-price') : null
+        var priceText = priceEl ? priceEl.textContent.replace(/[^0-9.]/g, '') : ''
+        var priceShownCents = priceText ? Math.round(parseFloat(priceText) * 100) : null
+        track('plan_selected', { plan_id: planId, yearly: yearly })
+        track('cta_clicked', { plan_id: planId, price_shown_cents: priceShownCents, interval: yearly ? 'yearly' : 'monthly' })
+        startCheckout(config, planId, yearly)
       }
     })
 
-    state.activePaywall = { overlay: overlay, config: config }
+    state.activePaywall = { overlay: overlay, config: config, keyHandler: onKeyDown }
   }
 
-  function closePaywall() {
+  function closePaywall(method) {
     if (state.activePaywall) {
       var overlay = state.activePaywall.overlay
+      var keyHandler = state.activePaywall.keyHandler
+      var dwellMs = state.paywallShownAt ? (Date.now() - state.paywallShownAt) : null
+
+      // Remove ESC listener
+      if (keyHandler) document.removeEventListener('keydown', keyHandler)
+
+      // Clear any pending hover timers
+      for (var pid in state.hoverTimers) { clearTimeout(state.hoverTimers[pid]) }
+      state.hoverTimers = {}
+
+      // Emit behavioural events if this is a dismissal (not a checkout redirect)
+      if (method) {
+        track('paywall_dismissed', { method: method, dwell_ms: dwellMs })
+      }
+      if (dwellMs !== null) {
+        track('paywall_dwell', { dwell_ms: dwellMs })
+      }
+
+      state.paywallShownAt = null
       overlay.style.animation = 'hatchFadeIn 0.15s ease reverse'
       setTimeout(function() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay) }, 150)
       state.activePaywall = null
@@ -905,6 +1010,16 @@
     track('checkout_started', { plan_id: planId })
     var successUrl = config.success_redirect_url ||
       (window.location.href + (window.location.href.includes('?') ? '&' : '?') + 'hatch_success=1')
+
+    // Persist pending checkout so we can detect abandonment on return
+    try {
+      sessionStorage.setItem(CHECKOUT_PENDING_KEY, JSON.stringify({
+        planId: planId,
+        paywallId: config.id,
+        startedAt: Date.now(),
+      }))
+    } catch (e) {}
+
     try {
       var res = await fetch(API_BASE + '/stripe/checkout', {
         method: 'POST',
@@ -917,8 +1032,12 @@
         window.location.href = data.url
       } else {
         console.error('[Hatch] Checkout failed — no redirect URL returned.', data.error || data)
+        try { sessionStorage.removeItem(CHECKOUT_PENDING_KEY) } catch (e) {}
       }
-    } catch (e) { console.error('[Hatch] Checkout network error:', e) }
+    } catch (e) {
+      console.error('[Hatch] Checkout network error:', e)
+      try { sessionStorage.removeItem(CHECKOUT_PENDING_KEY) } catch (e) {}
+    }
   }
 
   // ─── Heartbeat ─────────────────────────────────────────────────────────────
@@ -947,6 +1066,27 @@
     console.log('[Hatch] SDK loaded — API base:', API_BASE, '| key:', apiKey.slice(0, 8) + '...')
     injectStyles()
     track('page_view', { url: window.location.href })
+
+    // Detect checkout abandonment: user started checkout but returned without paying
+    try {
+      var pendingRaw = sessionStorage.getItem(CHECKOUT_PENDING_KEY)
+      if (pendingRaw) {
+        if (window.location.search.includes('hatch_success=1')) {
+          // Successful payment — clear flag, do not fire abandoned
+          sessionStorage.removeItem(CHECKOUT_PENDING_KEY)
+        } else {
+          // Returned without paying
+          sessionStorage.removeItem(CHECKOUT_PENDING_KEY)
+          var pending = JSON.parse(pendingRaw)
+          track('checkout_abandoned', {
+            plan_id: pending.planId,
+            paywall_id: pending.paywallId,
+            time_away_ms: Date.now() - (pending.startedAt || 0),
+          })
+        }
+      }
+    } catch (e) {}
+
     if (window.location.search.includes('hatch_success=1')) fetchSubscription()
     state.initialized = true
     // Heartbeat: signal SDK presence to the dashboard immediately and every 60s
@@ -962,8 +1102,27 @@
     fetchSubscription()
   }
 
+  function getIsReturning() {
+    try {
+      var raw = localStorage.getItem(VISIT_KEY)
+      return raw ? JSON.parse(raw).count > 1 : false
+    } catch (e) { return false }
+  }
+
   function track(eventName, properties) {
     if (!state.apiKey) return
+    // Enrich every event with behavioural context
+    var enriched = Object.assign({
+      device:       getDevice(),
+      utm_source:   getUtm('utm_source')   || undefined,
+      utm_campaign: getUtm('utm_campaign') || undefined,
+      referrer:     (document.referrer || undefined),
+      hour_bucket:  getHourBucket(),
+      day_of_week:  new Date().getDay(),
+      returning:    getIsReturning(),
+      segment_hash: state.segmentHash || undefined,
+    }, properties || {})
+
     var payload = {
       apiKey: state.apiKey,
       event: eventName,
@@ -971,7 +1130,7 @@
       sessionId: state.sessionId,
       paywallId: state.activePaywall ? state.activePaywall.config.id : (properties && properties.paywall_id) || null,
       variantId: state.variantId || null,
-      properties: properties || {},
+      properties: enriched,
     }
     if (navigator.sendBeacon) {
       navigator.sendBeacon(API_BASE + '/sdk/events', new Blob([JSON.stringify(payload)], { type: 'application/json' }))
@@ -1012,6 +1171,7 @@
       }
 
       if (config._variant_id) state.variantId = config._variant_id
+      if (data.segment_hash) state.segmentHash = data.segment_hash
 
       var plans = config.plan_ids && config.plan_ids.length > 0
         ? (config.plans || []).filter(function(p) { return config.plan_ids.includes(p.id) })
@@ -1101,7 +1261,7 @@
 
   function debug() {
     console.group('[Hatch Debug]')
-    console.log('SDK version : 3.2.0')
+    console.log('SDK version : 3.3.0')
     console.log('API Base    :', API_BASE)
     console.log('API Key     :', state.apiKey ? state.apiKey.slice(0, 8) + '...' : 'NOT SET')
     console.log('Initialized :', state.initialized)
@@ -1112,7 +1272,7 @@
     console.log('Active quiz :', state.activeQuiz ? 'yes' : 'none')
     console.groupEnd()
     return {
-      version: '3.2.0',
+      version: '3.3.0',
       apiBase: API_BASE,
       apiKey: state.apiKey,
       initialized: state.initialized,
@@ -1171,7 +1331,7 @@
   }
 
   // Expose a sentinel on window so integration tools can detect SDK presence
-  try { window.__hatch = { ready: true, version: '3.2.0' } } catch (e) {}
+  try { window.__hatch = { ready: true, version: '3.3.0' } } catch (e) {}
 
   return api
 })

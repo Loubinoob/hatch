@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createServiceClient } from "@supabase/supabase-js"
 import Anthropic from "@anthropic-ai/sdk"
+import { revenuePerImpression, formatPrice } from "@/lib/price-ladder"
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -351,6 +352,144 @@ Extract structured learnings. For anti-patterns, be specific enough that a futur
       duration_ms: Date.now() - t0,
     }).eq("id", run?.id)
 
+    // ─── Price elasticity analysis ──────────────────────────────────────────
+    const pricingInsightsAdded: string[] = []
+    try {
+      const planIds: string[] = paywall.plan_ids ?? []
+      if (planIds.length > 0) {
+        const { data: candidates } = await service
+          .from("plan_price_candidates")
+          .select("id, plan_id, price_cents, is_anchor, is_active")
+          .in("plan_id", planIds)
+          .eq("is_active", true)
+          .eq("interval", "monthly")
+
+        if (candidates?.length) {
+          const candidateIds = candidates.map((c: { id: string }) => c.id)
+          const { data: posteriors } = await service
+            .from("price_point_posteriors")
+            .select("price_candidate_id, impressions, conversions, revenue_cents")
+            .in("price_candidate_id", candidateIds)
+
+          // Aggregate posteriors across segments per candidate
+          const agg: Record<string, { impressions: number; conversions: number; revenue_cents: number }> = {}
+          for (const p of posteriors ?? []) {
+            const ex = agg[p.price_candidate_id] ?? { impressions: 0, conversions: 0, revenue_cents: 0 }
+            agg[p.price_candidate_id] = {
+              impressions:   ex.impressions   + (p.impressions   ?? 0),
+              conversions:   ex.conversions   + (p.conversions   ?? 0),
+              revenue_cents: ex.revenue_cents + (p.revenue_cents ?? 0),
+            }
+          }
+
+          // Group by plan
+          const byPlan: Record<string, typeof candidates> = {}
+          for (const c of candidates) {
+            if (!byPlan[c.plan_id]) byPlan[c.plan_id] = []
+            byPlan[c.plan_id].push(c)
+          }
+
+          for (const [planId, planCandidates] of Object.entries(byPlan)) {
+            const scored = planCandidates.map((c: { id: string; price_cents: number; is_anchor: boolean }) => {
+              const post = agg[c.id] ?? { impressions: 0, conversions: 0, revenue_cents: 0 }
+              return {
+                ...c,
+                impressions: post.impressions,
+                conversions: post.conversions,
+                rpi: revenuePerImpression(post.conversions, post.impressions, c.price_cents),
+              }
+            }).sort((a: { rpi: number }, b: { rpi: number }) => b.rpi - a.rpi)
+
+            const sufficient = scored.filter((c: { impressions: number }) => c.impressions >= 50)
+            if (sufficient.length < 2) continue // not enough data
+
+            const best = sufficient[0]
+            const dominated = sufficient.filter(
+              (c: { id: string; rpi: number; is_anchor: boolean }) =>
+                c.id !== best.id && !c.is_anchor && c.rpi < best.rpi * 0.7
+            )
+
+            // Archive clearly dominated candidates
+            for (const d of dominated) {
+              const reason = `Dominated by ${formatPrice(best.price_cents)} (RPI ${formatPrice(Math.round(best.rpi))} vs ${formatPrice(Math.round(d.rpi))} — ${Math.round((1 - d.rpi / best.rpi) * 100)}% lower)`
+              await service
+                .from("plan_price_candidates")
+                .update({ is_active: false })
+                .eq("id", d.id)
+              console.log(`[reflect/pricing] Archived candidate ${d.id} (${formatPrice(d.price_cents)}): ${reason}`)
+              pricingInsightsAdded.push(`Archived ${formatPrice(d.price_cents)}`)
+            }
+
+            // Boundary detection — suggest exploring higher/lower
+            // All scored candidates are already active (fetched with eq("is_active", true))
+            // Re-sort ascending by price for boundary checks
+            const bySorted = [...scored].sort((a: { price_cents: number }, b: { price_cents: number }) => a.price_cents - b.price_cents)
+            const highestActive = bySorted.at(-1)
+            const lowestActive  = bySorted[0]
+
+            if (best.price_cents === highestActive?.price_cents && sufficient.length >= 2) {
+              // Winner is at the top — suggest trying higher
+              const insightText = `For plan ${planId}: highest tested price (${formatPrice(best.price_cents)}) shows best RPI — consider testing a higher price tier`
+              const exists = await service.from("agent_insights").select("id")
+                .eq("account_id", accountId).eq("insight", insightText).maybeSingle()
+              if (!exists.data) {
+                await service.from("agent_insights").insert({
+                  account_id: accountId,
+                  paywall_id,
+                  insight: insightText,
+                  category: "pricing",
+                  importance: 7,
+                  learning_type: "hypothesis",
+                  segment_conditions: {},
+                  evidence: { plan_id: planId, best_price: best.price_cents, best_rpi: best.rpi },
+                })
+                pricingInsightsAdded.push(`Insight: price ceiling reached for plan ${planId}`)
+              }
+            } else if (best.price_cents === lowestActive?.price_cents && sufficient.length >= 2) {
+              // Winner is at the bottom — suggest testing lower may not help (price sensitivity)
+              const insightText = `For plan ${planId}: lowest tested price (${formatPrice(best.price_cents)}) shows best RPI — audience is highly price-sensitive`
+              const exists = await service.from("agent_insights").select("id")
+                .eq("account_id", accountId).eq("insight", insightText).maybeSingle()
+              if (!exists.data) {
+                await service.from("agent_insights").insert({
+                  account_id: accountId,
+                  paywall_id,
+                  insight: insightText,
+                  category: "pricing",
+                  importance: 8,
+                  learning_type: "observation",
+                  segment_conditions: {},
+                  evidence: { plan_id: planId, best_price: best.price_cents, best_rpi: best.rpi },
+                })
+                pricingInsightsAdded.push(`Insight: price floor is optimal for plan ${planId}`)
+              }
+            } else if (sufficient.length >= 3) {
+              // We have a clear winner in the middle — log it
+              const insightText = `For plan ${planId}: ${formatPrice(best.price_cents)} maximises revenue per impression across ${best.impressions} impressions`
+              const exists = await service.from("agent_insights").select("id")
+                .eq("account_id", accountId).eq("insight", insightText).maybeSingle()
+              if (!exists.data) {
+                await service.from("agent_insights").insert({
+                  account_id: accountId,
+                  paywall_id,
+                  insight: insightText,
+                  category: "pricing",
+                  importance: 6,
+                  learning_type: "positive_pattern",
+                  segment_conditions: {},
+                  evidence: { plan_id: planId, best_price: best.price_cents, impressions: best.impressions, rpi: best.rpi },
+                })
+                pricingInsightsAdded.push(`Insight: optimal price confirmed for plan ${planId}`)
+              }
+            }
+          }
+        }
+      }
+    } catch (priceErr) {
+      // Price analysis is non-fatal — tables may not exist yet
+      console.warn("[reflect/pricing] Skipped:", priceErr instanceof Error ? priceErr.message : priceErr)
+    }
+
     return NextResponse.json({
       summary: parsed.summary,
       actions_taken: actionsApplied,
@@ -358,6 +497,7 @@ Extract structured learnings. For anti-patterns, be specific enough that a futur
       antipatterns_generated: (parsed.antipatterns ?? []).length,
       plateau_detected: plateauDetected,
       new_insights: insightsInserted,
+      pricing_insights: pricingInsightsAdded,
     })
 
   } catch (err) {

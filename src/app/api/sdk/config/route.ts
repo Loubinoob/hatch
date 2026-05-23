@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient as createServiceClient } from "@supabase/supabase-js"
 import { computeSegmentHash, bucketHour } from "@/lib/segment"
 import { withDefaults } from "@/lib/paywall-resilience"
+import { generatePriceCandidates, snapToLadder } from "@/lib/price-ladder"
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -46,6 +47,142 @@ async function fetchPlansForIds(supabase: any, planIds: string[]): Promise<any[]
   if (!planIds.length) return []
   const { data } = await supabase.from("plans").select("*").in("id", planIds)
   return data ?? []
+}
+
+// ─── Revenue-weighted price bandit ───────────────────────────────────────────
+// For each plan with dynamic_pricing_enabled, select a price candidate via
+// Thompson sampling maximising EXPECTED REVENUE = P(convert) × price.
+// Silently falls back to the plan's fixed price if anything fails.
+async function applyDynamicPricing(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  plans: any[],
+  sessionId: string | null,
+  paywallId: string,
+  accountId: string,
+  segmentHash: string,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<{ plans: any[]; priceAssignments: Record<string, { candidateId: string; cents: number }> }> {
+  const priceAssignments: Record<string, { candidateId: string; cents: number }> = {}
+
+  const enrichedPlans = await Promise.all(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    plans.map(async (plan: any) => {
+      try {
+        // Skip if dynamic pricing disabled on this plan
+        if (plan.dynamic_pricing_enabled === false) return plan
+
+        // Fetch active candidates for this plan + interval
+        const { data: candidates } = await supabase
+          .from("plan_price_candidates")
+          .select("id, price_cents, interval, is_anchor")
+          .eq("plan_id", plan.id)
+          .eq("interval", "monthly")
+          .eq("is_active", true)
+
+        // Lazy bootstrap: no candidates yet → generate them and use anchor price now
+        if (!candidates?.length) {
+          await bootstrapPriceCandidates(supabase, plan, accountId)
+          return plan  // serve fixed price this impression; bandit kicks in next time
+        }
+
+        // Fetch posteriors for this segment
+        const { data: posteriors } = await supabase
+          .from("price_point_posteriors")
+          .select("price_candidate_id, alpha, beta, impressions")
+          .in("price_candidate_id", candidates.map((c: { id: string }) => c.id))
+          .eq("segment_hash", segmentHash)
+
+        const postMap = new Map(
+          (posteriors ?? []).map((p: { price_candidate_id: string; alpha: number; beta: number; impressions: number }) =>
+            [p.price_candidate_id, p]
+          )
+        )
+
+        // Revenue-weighted Thompson sampling
+        const scored = candidates.map((c: { id: string; price_cents: number }) => {
+          const post = postMap.get(c.id) as { alpha: number; beta: number; impressions: number } | undefined
+          const convProb = betaSample(post?.alpha ?? 1, post?.beta ?? 1)
+          const expectedRevenue = convProb * c.price_cents
+          return { candidate: c, score: expectedRevenue }
+        })
+
+        const chosen = scored.sort((a: { score: number }, b: { score: number }) => b.score - a.score)[0].candidate
+
+        // Bootstrap posteriors for any candidate not seen in this segment yet
+        const missingCandidates = candidates.filter((c: { id: string }) => !postMap.has(c.id))
+        if (missingCandidates.length > 0) {
+          await supabase.from("price_point_posteriors").upsert(
+            missingCandidates.map((c: { id: string }) => ({
+              price_candidate_id: c.id,
+              segment_hash: segmentHash,
+              alpha: 1, beta: 1, impressions: 0, conversions: 0, revenue_cents: 0,
+            })),
+            { onConflict: "price_candidate_id,segment_hash", ignoreDuplicates: true }
+          )
+        }
+
+        // Record price assignment
+        priceAssignments[plan.id] = { candidateId: chosen.id, cents: chosen.price_cents }
+
+        // Return plan with overridden price
+        const overridden = { ...plan, price_monthly: chosen.price_cents, _dynamic_price_candidate_id: chosen.id }
+        console.log(`[sdk/config] Dynamic price for plan "${plan.name}": ${chosen.price_cents}¢ (candidate ${chosen.id})`)
+        return overridden
+
+      } catch (err) {
+        // Pricing bandit failure is non-fatal — serve fixed price
+        console.warn(`[sdk/config] Price bandit failed for plan ${plan.id}:`, err)
+        return plan
+      }
+    })
+  )
+
+  // Update variant_assignments with chosen price(s) for the featured plan
+  const featuredPlanId = plans.find((p: { is_popular: boolean }) => p.is_popular)?.id ?? plans[0]?.id
+  if (sessionId && featuredPlanId && priceAssignments[featuredPlanId]) {
+    const pa = priceAssignments[featuredPlanId]
+    await supabase.from("variant_assignments")
+      .update({ price_candidate_id: pa.candidateId, price_shown_cents: pa.cents })
+      .eq("paywall_id", paywallId)
+      .eq("session_id", sessionId)
+  }
+
+  return { plans: enrichedPlans, priceAssignments }
+}
+
+async function bootstrapPriceCandidates(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  plan: any,
+  accountId: string,
+) {
+  try {
+    const anchorCents: number = plan.price_monthly ?? 0
+    if (anchorCents <= 0) return
+
+    const floorCents  = plan.price_floor_cents  ? snapToLadder(plan.price_floor_cents)  : undefined
+    const ceilCents   = plan.price_ceiling_cents ? snapToLadder(plan.price_ceiling_cents) : undefined
+    const candidates  = generatePriceCandidates(anchorCents, floorCents, ceilCents)
+
+    await supabase.from("plan_price_candidates").upsert(
+      candidates.map(c => ({
+        plan_id:      plan.id,
+        account_id:   accountId,
+        interval:     "monthly",
+        price_cents:  c,
+        is_anchor:    c === snapToLadder(anchorCents),
+        is_active:    true,
+        generated_by: "ai",
+      })),
+      { onConflict: "plan_id,interval,price_cents", ignoreDuplicates: true }
+    )
+    console.log(`[sdk/config] Bootstrapped ${candidates.length} price candidates for plan "${plan.name}"`)
+  } catch (err) {
+    console.warn(`[sdk/config] Failed to bootstrap price candidates for plan ${plan.id}:`, err)
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -125,7 +262,11 @@ export async function GET(request: NextRequest) {
         .maybeSingle(),
     ])
 
-    const base = withDefaults({ ...paywall, plans })
+    // Apply dynamic pricing before variant merge
+    const { plans: pricedPlans } = await applyDynamicPricing(
+      supabase, plans, sessionId, paywallId, user.account_id, segmentHash
+    )
+    const base = withDefaults({ ...paywall, plans: pricedPlans })
     const enriched = await applyVariantContextual(
       supabase, base, sessionId, user.account_id, segmentHash, segmentFeatures
     )
@@ -169,8 +310,15 @@ export async function GET(request: NextRequest) {
     })
   )
 
+  // Dynamic pricing on the first (featured) paywall's plans
+  const firstPaywall = paywallsWithPlans[0]
+  const { plans: pricedFirstPlans } = await applyDynamicPricing(
+    supabase, firstPaywall.plans ?? [], sessionId, firstPaywall.id, user.account_id, segmentHash
+  )
+  const firstWithPricing = { ...firstPaywall, plans: pricedFirstPlans }
+
   const enrichedFirst = await applyVariantContextual(
-    supabase, paywallsWithPlans[0], sessionId, user.account_id, segmentHash, segmentFeatures
+    supabase, firstWithPricing, sessionId, user.account_id, segmentHash, segmentFeatures
   )
   const result = [enrichedFirst, ...paywallsWithPlans.slice(1)]
 

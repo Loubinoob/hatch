@@ -39,6 +39,7 @@ type Plan = {
   stripe_price_id_monthly: string | null
   stripe_price_id_yearly: string | null
   stripe_product_id: string | null
+  dynamic_pricing_enabled: boolean
 }
 
 type NewPlan = Omit<Plan, "id" | "sort_order">
@@ -56,6 +57,7 @@ const DEFAULT_PLAN: NewPlan = {
   stripe_price_id_monthly: null,
   stripe_price_id_yearly: null,
   stripe_product_id: null,
+  dynamic_pricing_enabled: false,
 }
 
 function SortablePlanCard({
@@ -233,6 +235,7 @@ export default function PlansPage() {
       stripe_price_id_monthly: plan.stripe_price_id_monthly,
       stripe_price_id_yearly: plan.stripe_price_id_yearly,
       stripe_product_id: plan.stripe_product_id,
+      dynamic_pricing_enabled: plan.dynamic_pricing_enabled ?? false,
     })
     setShowModal(true)
   }
@@ -240,19 +243,38 @@ export default function PlansPage() {
   async function handleSave() {
     if (!accountId || !form.name.trim()) { toast.error("Plan name is required"); return }
     setSaving(true)
+
+    let savedPlanId: string | null = null
+
     if (editing) {
       const { error } = await supabase.from("plans").update({ ...form }).eq("id", editing.id)
       if (error) { toast.error(error.message); setSaving(false); return }
+      savedPlanId = editing.id
       toast.success("Plan updated")
     } else {
-      const { error } = await supabase.from("plans").insert({
+      const { data: newPlan, error } = await supabase.from("plans").insert({
         ...form,
         account_id: accountId,
         sort_order: plans.length,
-      })
+      }).select("id").single()
       if (error) { toast.error(error.message); setSaving(false); return }
+      savedPlanId = newPlan?.id ?? null
       toast.success("Plan created")
     }
+
+    // Bootstrap price candidates if dynamic pricing is enabled
+    if (savedPlanId && form.dynamic_pricing_enabled && form.price_monthly > 0) {
+      try {
+        await fetch("/api/pricing/bootstrap", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ plan_id: savedPlanId }),
+        })
+      } catch {
+        // Non-fatal — candidates are bootstrapped lazily on first impression anyway
+      }
+    }
+
     setSaving(false)
     setShowModal(false)
     loadPlans()
@@ -481,7 +503,7 @@ export default function PlansPage() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-4 pt-1">
+                <div className="flex flex-wrap items-center gap-4 pt-1">
                   <label className="flex items-center gap-2 cursor-pointer" onClick={() => setForm(f => ({...f, is_popular: !f.is_popular}))}>
                     <div className={`w-8 h-5 rounded-full transition-colors relative ${form.is_popular ? "bg-indigo-600" : "bg-white/10"}`}>
                       <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${form.is_popular ? "left-3.5" : "left-0.5"}`} />
@@ -494,7 +516,21 @@ export default function PlansPage() {
                     </div>
                     <span className="text-xs text-[#A1A1AA]">Active</span>
                   </label>
+                  <label className="flex items-center gap-2 cursor-pointer" onClick={() => setForm(f => ({...f, dynamic_pricing_enabled: !f.dynamic_pricing_enabled}))}>
+                    <div className={`w-8 h-5 rounded-full transition-colors relative ${form.dynamic_pricing_enabled ? "bg-amber-500" : "bg-white/10"}`}>
+                      <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${form.dynamic_pricing_enabled ? "left-3.5" : "left-0.5"}`} />
+                    </div>
+                    <span className="text-xs text-[#A1A1AA]">
+                      Dynamic pricing
+                      {form.dynamic_pricing_enabled && <span className="ml-1 text-amber-400">⚡</span>}
+                    </span>
+                  </label>
                 </div>
+                {form.dynamic_pricing_enabled && (
+                  <p className="text-[11px] text-amber-400/80 bg-amber-500/8 border border-amber-500/15 rounded-lg px-3 py-2">
+                    Hatch will A/B test prices around your anchor using Thompson sampling and serve the highest-revenue price to each user.
+                  </p>
+                )}
 
                 <div className="flex gap-3 pt-2">
                   <button onClick={() => setShowModal(false)} className="flex-1 hatch-btn-secondary">Cancel</button>
