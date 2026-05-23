@@ -1184,6 +1184,19 @@
     state.context = buildContext(isReturning, sessionCount)
 
     console.log('[Hatch] SDK loaded — API base:', API_BASE, '| key:', apiKey.slice(0, 8) + '...')
+
+    // Non-blocking API key verification — confirms events will be recorded
+    fetch(API_BASE + '/sdk/ping?key=' + apiKey)
+      .then(function(res) { return res.json() })
+      .then(function(data) {
+        if (!data.valid) {
+          console.error('[Hatch] ❌ API key invalid — events will NOT be recorded. Check your data-key attribute.')
+        } else {
+          console.log('[Hatch] ✅ Connected' + (data.account ? ' (' + data.account + ')' : '') + ' — ' + (data.events_24h || 0) + ' events in last 24h' + (data.last_event_at ? ' | last: ' + new Date(data.last_event_at).toLocaleTimeString() : ''))
+        }
+      })
+      .catch(function() { /* non-fatal — ping failure should never break the SDK */ })
+
     injectStyles()
     track('page_view', { url: window.location.href })
 
@@ -1254,7 +1267,25 @@
       properties: enriched,
     }
     console.log('[Hatch] track', eventName, { paywallId: payload.paywallId, sessionId: state.sessionId ? state.sessionId.slice(0, 8) + '…' : null })
-    if (navigator.sendBeacon) {
+
+    // paywall_shown is the most critical event — use fetch so we can detect 401/500 errors.
+    // All other events use sendBeacon (fire-and-forget, survives page unload).
+    if (eventName === 'paywall_shown') {
+      fetch(API_BASE + '/sdk/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      }).then(function(res) {
+        if (!res.ok) {
+          console.error('[Hatch] ❌ paywall_shown NOT recorded — HTTP ' + res.status + '. Check API key and network.')
+        } else {
+          console.log('[Hatch] ✅ paywall_shown recorded (paywall: ' + (payload.paywallId || 'unknown') + ')')
+        }
+      }).catch(function(err) {
+        console.error('[Hatch] ❌ paywall_shown network error:', err)
+      })
+    } else if (navigator.sendBeacon) {
       navigator.sendBeacon(API_BASE + '/sdk/events', new Blob([JSON.stringify(payload)], { type: 'application/json' }))
     } else {
       fetch(API_BASE + '/sdk/events', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), keepalive: true }).catch(function() {})
