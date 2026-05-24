@@ -102,7 +102,7 @@ export default function AnalyticsPage() {
 
   // ── Pricing data ───────────────────────────────────────────────────────────
   const [pricingData, setPricingData] = useState<{
-    plan: { id: string; name: string; price_monthly: number; dynamic_pricing_enabled: boolean };
+    plan: { id: string; name: string; price_monthly: number; dynamic_pricing_enabled?: boolean };
     candidates: { id: string; price_cents: number; is_anchor: boolean; impressions: number; conversions: number; rpi: number }[];
     maturity: { maturity_score: number; preferred_engine: string; total_impressions: number; total_conversions: number; distinct_prices_tested: number } | null;
     topVariables: { variable_name: string; importance_score: number; optimal_price_by_value: Record<string, number>; revenue_spread_cents: number }[];
@@ -389,9 +389,12 @@ export default function AnalyticsPage() {
 
   // ── Pricing ────────────────────────────────────────────────────────────────
   async function loadPricing(accId: string) {
+    // Only select safe columns — dynamic_pricing_enabled & is_active may not exist
+    // pre-migration. is_active filter is applied separately below to avoid a
+    // query error if the column is missing.
     const { data: plans } = await supabase.from("plans")
-      .select("id, name, price_monthly, dynamic_pricing_enabled")
-      .eq("account_id", accId).eq("is_active", true)
+      .select("id, name, price_monthly")
+      .eq("account_id", accId)
 
     if (!plans?.length) return
 
@@ -438,7 +441,7 @@ export default function AnalyticsPage() {
       }
     }
 
-    const result = (plans ?? []).map((plan: { id: string; name: string; price_monthly: number; dynamic_pricing_enabled: boolean }) => {
+    const result = (plans ?? []).map((plan: { id: string; name: string; price_monthly: number }) => {
       const planCandidates = (candidates ?? [])
         .filter((c: { plan_id: string }) => c.plan_id === plan.id)
         .map((c: { id: string; price_cents: number; is_anchor: boolean }) => {
@@ -1109,7 +1112,7 @@ export default function AnalyticsPage() {
           )}
 
           {/* ── Dev-only Simulator Panel ──────────────────────────────────── */}
-          {IS_DEV && <SimulatorPanel pricingData={pricingData} />}
+          {IS_DEV && <SimulatorPanel accountId={accountId} />}
         </motion.div>
       )}
     </div>
@@ -1130,20 +1133,43 @@ type SimReport = {
   candidates_used: { price_cents: number; is_anchor: boolean }[]
 }
 
-function SimulatorPanel({ pricingData }: {
-  pricingData: { plan: { id: string; name: string }; candidates: { price_cents: number }[] }[]
-}) {
+type SimPlan = { id: string; name: string; price_monthly: number }
+
+function SimulatorPanel({ accountId }: { accountId: string | null }) {
+  const supabase = createClient()
   const [open, setOpen] = useState(false)
   const [running, setRunning] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [report, setReport] = useState<SimReport | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const [planId, setPlanId] = useState(pricingData[0]?.plan.id ?? "")
+  // Plan list — loaded independently using only safe columns
+  const [plans, setPlans] = useState<SimPlan[]>([])
+  const [plansLoading, setPlansLoading] = useState(false)
+  const [planId, setPlanId] = useState("")
+
   const [nUsers, setNUsers] = useState(2000)
   const [midpoint, setMidpoint] = useState(3500)
   const [discVar, setDiscVar] = useState("utm_source")
   const [scientistEvery, setScientistEvery] = useState(500)
+
+  // Load plans when panel opens (or accountId is ready)
+  useEffect(() => {
+    if (!open || !accountId) return
+    setPlansLoading(true)
+    supabase.from("plans")
+      // Only safe columns — avoids PGRST error if optional columns are missing
+      .select("id, name, price_monthly")
+      .eq("account_id", accountId)
+      .order("name")
+      .then(({ data }) => {
+        const rows = (data ?? []) as SimPlan[]
+        setPlans(rows)
+        if (rows.length > 0 && !planId) setPlanId(rows[0].id)
+        setPlansLoading(false)
+      })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, accountId])
 
   async function runSim() {
     if (!planId) return
@@ -1212,15 +1238,27 @@ function SimulatorPanel({ pricingData }: {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] text-[#71717A] mb-1 block">Plan</label>
-              <select
-                value={planId}
-                onChange={e => setPlanId(e.target.value)}
-                className="w-full bg-[#111114] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
-              >
-                {pricingData.map(d => (
-                  <option key={d.plan.id} value={d.plan.id}>{d.plan.name}</option>
-                ))}
-              </select>
+              {plansLoading ? (
+                <div className="flex items-center gap-1.5 h-7 text-[10px] text-[#52525B]">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Loading plans…
+                </div>
+              ) : plans.length === 0 ? (
+                <div className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-2 py-1.5">
+                  No plans found. <Link href="/plans" className="underline hover:text-amber-300">Create a plan first.</Link>
+                </div>
+              ) : (
+                <select
+                  value={planId}
+                  onChange={e => setPlanId(e.target.value)}
+                  className="w-full bg-[#111114] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
+                >
+                  {plans.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} — ${(p.price_monthly / 100).toFixed(0)}/mo
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
             <div>
               <label className="text-[10px] text-[#71717A] mb-1 block">N users</label>
@@ -1258,16 +1296,17 @@ function SimulatorPanel({ pricingData }: {
           <div className="flex gap-2">
             <button
               onClick={runSim}
-              disabled={running || !planId}
-              className="flex items-center gap-1.5 px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black text-xs font-semibold rounded-lg transition-colors"
+              disabled={running || !planId || plans.length === 0}
+              title={plans.length === 0 ? "Create a plan first" : undefined}
+              className="flex items-center gap-1.5 px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-black text-xs font-semibold rounded-lg transition-colors"
             >
               {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <FlaskConical className="w-3 h-3" />}
               {running ? "Simulating…" : "Run simulation"}
             </button>
             <button
               onClick={resetSim}
-              disabled={resetting || !planId}
-              className="flex items-center gap-1.5 px-3 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 text-[#71717A] hover:text-white text-xs rounded-lg transition-colors border border-white/10"
+              disabled={resetting || !planId || plans.length === 0}
+              className="flex items-center gap-1.5 px-3 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed text-[#71717A] hover:text-white text-xs rounded-lg transition-colors border border-white/10"
             >
               {resetting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
               Reset sim data
@@ -1275,7 +1314,13 @@ function SimulatorPanel({ pricingData }: {
           </div>
 
           {error && (
-            <p className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2">{error}</p>
+            <div className="text-xs text-red-400 bg-red-500/8 border border-red-500/20 rounded-lg px-3 py-2.5 space-y-1">
+              <p className="font-semibold">Simulation error</p>
+              <p className="font-mono text-[10px] text-red-300/80 whitespace-pre-wrap break-all">{error}</p>
+              {error.includes("migration") || error.includes("Schema") ? (
+                <p className="text-red-400/70">→ Run <code className="font-mono bg-red-500/10 px-1 rounded">supabase db push</code> on your production database to apply pending migrations.</p>
+              ) : null}
+            </div>
           )}
 
           {report && (

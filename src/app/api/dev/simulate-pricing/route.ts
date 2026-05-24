@@ -5,6 +5,7 @@ import { selectPriceCandidate, PriceCandidate, PricePosterior } from "@/lib/pric
 import { computeElasticity } from "@/lib/elasticity"
 import { computeVariableImportance } from "@/lib/variable-importance"
 import { runInhouseModel } from "@/lib/inhouse-pricing-model"
+import { generatePriceCandidates, snapToLadder } from "@/lib/price-ladder"
 
 /**
  * POST /api/dev/simulate-pricing
@@ -69,11 +70,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Forbidden — simulation endpoint not available in production" }, { status: 403 })
   }
 
-  const body: SimInput = await request.json()
+  let body: SimInput
+  try {
+    body = await request.json()
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
+  }
+
   const { plan_id, n_users = 2000, ground_truth: gt, scientist_every = 500 } = body
 
-  if (!plan_id || !gt) {
-    return NextResponse.json({ error: "plan_id and ground_truth are required" }, { status: 400 })
+  if (!plan_id) {
+    return NextResponse.json({ error: "plan_id is required" }, { status: 400 })
+  }
+  if (!gt) {
+    return NextResponse.json({ error: "ground_truth is required" }, { status: 400 })
   }
 
   const service = createServiceClient(
@@ -81,20 +91,54 @@ export async function POST(request: NextRequest) {
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   )
 
-  // ── Fetch plan + candidates ───────────────────────────────────────────────
-  const { data: plan } = await service
+  // ── Fetch plan — only safe columns (no optional migration columns) ────────
+  const { data: plan, error: planError } = await service
     .from("plans")
-    .select("id, name, price_monthly, price_floor_cents, price_ceiling_cents, account_id, dynamic_pricing_enabled")
+    .select("id, name, price_monthly, account_id")
     .eq("id", plan_id)
     .single()
 
-  if (!plan) return NextResponse.json({ error: "Plan not found" }, { status: 404 })
+  if (planError) {
+    const msg = planError.message ?? ""
+    if (msg.includes("Could not find") || msg.includes("column")) {
+      return NextResponse.json(
+        { error: `Schema not up to date: ${msg}. Run migrations on prod (supabase db push).` },
+        { status: 500 }
+      )
+    }
+  }
 
-  const floorCents = plan.price_floor_cents ?? Math.round((plan.price_monthly ?? 0) * 0.5)
-  const ceilingCents = plan.price_ceiling_cents ?? Math.round((plan.price_monthly ?? 0) * 2.0)
+  if (!plan) {
+    return NextResponse.json({ error: `Plan not found: ${plan_id}` }, { status: 404 })
+  }
+
+  if (!plan.price_monthly || plan.price_monthly <= 0) {
+    return NextResponse.json(
+      { error: "Plan has no base price — set price_monthly > 0 before simulating." },
+      { status: 400 }
+    )
+  }
+
+  // Fetch optional floor/ceiling separately (resilient to missing columns)
+  const anchorCents: number = plan.price_monthly
+  let floorCents = Math.round(anchorCents * 0.5)
+  let ceilingCents = Math.round(anchorCents * 2.0)
+  try {
+    const { data: priceRange } = await service
+      .from("plans")
+      .select("price_floor_cents, price_ceiling_cents")
+      .eq("id", plan_id)
+      .single()
+    if (priceRange?.price_floor_cents) floorCents = priceRange.price_floor_cents
+    if (priceRange?.price_ceiling_cents) ceilingCents = priceRange.price_ceiling_cents
+  } catch { /* columns may not exist — use defaults */ }
+
   const accountId: string = plan.account_id
 
-  const { data: candidateRows } = await service
+  // ── Fetch or auto-generate price candidates ───────────────────────────────
+  // Auto-generation: if no candidates exist, bootstrap them from the plan's
+  // anchor price so the simulation works on brand-new plans without cold-start.
+  let { data: candidateRows } = await service
     .from("plan_price_candidates")
     .select("id, price_cents, is_anchor, interval")
     .eq("plan_id", plan_id)
@@ -102,7 +146,43 @@ export async function POST(request: NextRequest) {
     .eq("interval", "monthly")
 
   if (!candidateRows?.length) {
-    return NextResponse.json({ error: "No active price candidates — run cold-start first" }, { status: 400 })
+    console.log(`[simulate-pricing] No candidates for plan ${plan_id} — auto-generating from anchor ${anchorCents}¢`)
+    try {
+      const generated = generatePriceCandidates(anchorCents, snapToLadder(floorCents), snapToLadder(ceilingCents))
+      const anchorSnapped = snapToLadder(anchorCents)
+      const rows = generated.map(priceCents => ({
+        plan_id,
+        account_id: accountId,
+        interval: "monthly",
+        price_cents: priceCents,
+        is_anchor: priceCents === anchorSnapped,
+        is_active: true,
+        generated_by: "ai",
+      }))
+      const { data: inserted, error: insertError } = await service
+        .from("plan_price_candidates")
+        .upsert(rows, { onConflict: "plan_id,interval,price_cents", ignoreDuplicates: true })
+        .select("id, price_cents, is_anchor, interval")
+      if (insertError) {
+        return NextResponse.json(
+          { error: `Failed to auto-generate price candidates: ${insertError.message}` },
+          { status: 500 }
+        )
+      }
+      candidateRows = inserted ?? []
+    } catch (e) {
+      return NextResponse.json(
+        { error: `Failed to auto-generate price candidates: ${e instanceof Error ? e.message : String(e)}` },
+        { status: 500 }
+      )
+    }
+  }
+
+  if (!candidateRows?.length) {
+    return NextResponse.json(
+      { error: "Could not find or generate price candidates for this plan." },
+      { status: 400 }
+    )
   }
 
   const candidates: PriceCandidate[] = candidateRows.map((c: { id: string; price_cents: number; is_anchor: boolean; interval: string }) => ({
@@ -112,6 +192,8 @@ export async function POST(request: NextRequest) {
     interval: c.interval,
   }))
 
+  // ── Simulation (wrapped — never return a 500 without a readable message) ──
+  try {
   const segValues = Object.keys(gt.willingness_by_value)
   const SIM_PREFIX = "sim:"
 
@@ -328,4 +410,16 @@ export async function POST(request: NextRequest) {
     scientist_every,
     note: "Synthetic data prefixed 'sim:' in price_point_posteriors. Call DELETE /api/dev/reset-simulation to purge.",
   })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    console.error("[simulate-pricing] Unexpected error:", msg)
+    // Check for schema-related errors
+    if (msg.includes("Could not find") || msg.includes("column") || msg.includes("relation")) {
+      return NextResponse.json(
+        { error: `Schema not up to date: ${msg}. Run migrations on prod (supabase db push).` },
+        { status: 500 }
+      )
+    }
+    return NextResponse.json({ error: `Simulation failed: ${msg}` }, { status: 500 })
+  }
 }
