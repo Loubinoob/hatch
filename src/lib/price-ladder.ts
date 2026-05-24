@@ -29,12 +29,12 @@ export function snapToLadder(targetCents: number, charm = false): number {
 export type PricingAggressiveness = "conservative" | "balanced" | "aggressive"
 
 const AGGRESSIVENESS_MULTIPLIERS: Record<PricingAggressiveness, number[]> = {
-  // conservative: ±~25% around anchor — safer, slower
-  conservative: [0.80, 1.0, 1.20],
-  // balanced: ±50%–70% — default, healthy exploration
-  balanced:     [0.70, 1.0, 1.35, 1.70],
-  // aggressive: ±90% — maximises learning speed, more price variance
-  aggressive:   [0.50, 0.65, 1.0, 1.35, 1.70, 1.90],
+  // conservative: ±10% around anchor — minimal variance, safest
+  conservative: [0.90, 1.0, 1.10],
+  // balanced: -15% to +30% — default, healthy exploration without shock
+  balanced:     [0.85, 1.0, 1.15, 1.30],
+  // aggressive: -30% to +45% — fast learning, more price variance
+  aggressive:   [0.70, 0.85, 1.0, 1.20, 1.45],
 }
 
 /**

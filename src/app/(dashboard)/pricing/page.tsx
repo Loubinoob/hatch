@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { withPlanDefaults } from "@/lib/plan-resilience"
+import { revenuePerImpression } from "@/lib/price-ladder"
 import PricingClient from "./PricingClient"
 
 export const dynamic = "force-dynamic"
@@ -19,22 +20,45 @@ export default async function PricingPage() {
 
   const accountId: string = profile.account_id
 
-  // Load all plans
-  const { data: rawPlans } = await supabase
+  // ── Stage 1: safe base columns only (guaranteed in schema v001) ──────────────
+  // NEVER include optional/recent columns here — missing columns cause a PGRST
+  // error that makes the whole query return null → "No plans yet" false positive.
+  const { data: basePlans, error: basePlansError } = await supabase
     .from("plans")
-    .select("id, name, price_monthly, price_yearly, dynamic_pricing_enabled, pricing_aggressiveness, price_floor_cents, price_ceiling_cents, pricing_segment_keys, is_active")
+    .select("id, name, price_monthly, price_yearly, is_active, sort_order, dynamic_pricing_enabled")
     .eq("account_id", accountId)
     .order("sort_order")
 
-  const plans = (rawPlans ?? []).map(p => withPlanDefaults(p as Record<string, unknown>))
+  if (basePlansError) {
+    return (
+      <PricingClient
+        plans={[]}
+        accountId={accountId}
+        planData={{}}
+        loadError={`Database error: ${basePlansError.message} — run: npx supabase db push`}
+      />
+    )
+  }
 
-  if (plans.length === 0) {
+  if (!basePlans?.length) {
     return <PricingClient plans={[]} accountId={accountId} planData={{}} />
   }
 
-  const planIds = plans.map((p: Record<string, unknown>) => p.id as string)
+  // ── Stage 2: optional columns (silent fail if migration 015 not yet applied) ─
+  const { data: extData } = await supabase
+    .from("plans")
+    .select("id, pricing_aggressiveness, price_floor_cents, price_ceiling_cents, pricing_segment_keys")
+    .eq("account_id", accountId)
 
-  // Load all data in parallel
+  const extMap = new Map((extData ?? []).map(e => [e.id as string, e]))
+
+  const plans = basePlans.map(p =>
+    withPlanDefaults({ ...p, ...(extMap.get(p.id) ?? {}) } as Record<string, unknown>)
+  )
+
+  const planIds = plans.map(p => p.id as string)
+
+  // ── Load all pricing data in parallel ──────────────────────────────────────
   const [
     candidatesRes,
     posteriorsRes,
@@ -51,10 +75,10 @@ export default async function PricingPage() {
       .eq("interval", "monthly")
       .order("price_cents"),
 
+    // All segments (not just global) — aggregate in code for accurate impression counts
     supabase
       .from("price_point_posteriors")
-      .select("price_candidate_id, segment_hash, alpha, beta, impressions, conversions, revenue_cents, updated_at")
-      .eq("segment_hash", "global"),
+      .select("price_candidate_id, segment_hash, impressions, conversions, revenue_cents"),
 
     supabase
       .from("price_elasticity_snapshots")
@@ -70,10 +94,10 @@ export default async function PricingPage() {
 
     supabase
       .from("pricing_scientist_runs")
-      .select("id, plan_id, run_type, engine, reasoning, actions, data_maturity, duration_ms, created_at")
+      .select("id, plan_id, run_type, engine, reasoning, actions, data_maturity, duration_ms, created_at, model_used, optimal_by_segment")
       .in("plan_id", planIds)
       .order("created_at", { ascending: false })
-      .limit(50),
+      .limit(60),
 
     supabase
       .from("pricing_data_maturity")
@@ -81,25 +105,37 @@ export default async function PricingPage() {
       .in("plan_id", planIds)
       .eq("segment_hash", "global"),
 
+    // Full demand model data (m_vec / q_vec) for demand curve rendering
     supabase
       .from("pricing_demand_models")
-      .select("plan_id, segment_hash, n_obs, anchor_cents, updated_at")
+      .select("plan_id, segment_hash, n_obs, anchor_cents, feature_names, m_vec, q_vec, updated_at")
       .in("plan_id", planIds)
       .eq("segment_hash", "global"),
   ])
 
   const candidates = candidatesRes.data ?? []
-  const posteriors = posteriorsRes.data ?? []
+  const allPosteriors = posteriorsRes.data ?? []
   const elasticityRows = elasticityRes.data ?? []
   const viRows = variableImportanceRes.data ?? []
   const scientistRuns = scientistRunsRes.data ?? []
   const maturityRows = maturityRes.data ?? []
   const demandModels = demandModelsRes.data ?? []
 
-  // Build posterior map keyed by price_candidate_id
-  const posteriorMap = new Map(posteriors.map(p => [p.price_candidate_id, p]))
+  // ── Aggregate posteriors across all non-sim segments ─��───────────────────────
+  const posteriorAgg = new Map<string, {
+    impressions: number; conversions: number; revenue_cents: number
+  }>()
+  for (const p of allPosteriors) {
+    if (typeof p.segment_hash === "string" && p.segment_hash.startsWith("sim:")) continue
+    const ex = posteriorAgg.get(p.price_candidate_id) ?? { impressions: 0, conversions: 0, revenue_cents: 0 }
+    posteriorAgg.set(p.price_candidate_id, {
+      impressions:   ex.impressions   + (p.impressions ?? 0),
+      conversions:   ex.conversions   + (p.conversions ?? 0),
+      revenue_cents: ex.revenue_cents + Number(p.revenue_cents ?? 0),
+    })
+  }
 
-  // Build per-plan data
+  // ── Build per-plan data bundles ───────────────────────────────────────────────
   const planData: Record<string, unknown> = {}
 
   for (const plan of plans) {
@@ -108,40 +144,37 @@ export default async function PricingPage() {
 
     const planCandidates = candidates
       .filter(c => c.plan_id === planId)
-      .map(c => ({
-        ...c,
-        posterior: posteriorMap.get(c.id) ?? null,
-      }))
+      .map(c => {
+        const post = posteriorAgg.get(c.id) ?? { impressions: 0, conversions: 0, revenue_cents: 0 }
+        return {
+          ...c,
+          impressions:   post.impressions,
+          conversions:   post.conversions,
+          revenue_cents: post.revenue_cents,
+          rpi:           revenuePerImpression(post.conversions, post.impressions, c.price_cents),
+        }
+      })
 
-    // Latest elasticity snapshot for this plan
     const latestElasticity = elasticityRows.find(e => e.plan_id === planId) ?? null
+    const planVI           = viRows.filter(v => v.plan_id === planId).slice(0, 5)
+    const planRuns         = scientistRuns.filter(r => r.plan_id === planId).slice(0, 10)
+    const maturity         = maturityRows.find(m => m.plan_id === planId) ?? null
+    const demandModel      = demandModels.find(d => d.plan_id === planId) ?? null
 
-    // Top variable importance entries for this plan
-    const planVI = viRows.filter(v => v.plan_id === planId).slice(0, 5)
+    // Incremental revenue vs all-anchor baseline
+    const anchorCandidate  = planCandidates.find(c => c.is_anchor)
+    const totalImpressions = planCandidates.reduce((s, c) => s + c.impressions, 0)
+    const totalRevenueCents = planCandidates.reduce((s, c) => s + c.revenue_cents, 0)
+    const anchorConvRate   = anchorCandidate && anchorCandidate.impressions > 0
+      ? anchorCandidate.conversions / anchorCandidate.impressions : null
+    const counterfactual   = anchorConvRate !== null
+      ? Math.round(anchorConvRate * anchorCents * totalImpressions) : null
+    const incrementalRevenueCents = counterfactual !== null ? totalRevenueCents - counterfactual : null
 
-    // Scientist runs for this plan
-    const planRuns = scientistRuns.filter(r => r.plan_id === planId).slice(0, 10)
-
-    // Maturity
-    const maturity = maturityRows.find(m => m.plan_id === planId) ?? null
-
-    // Demand model
-    const demandModel = demandModels.find(d => d.plan_id === planId) ?? null
-
-    // Incremental revenue calculation
-    const anchorCandidate = planCandidates.find(c => c.is_anchor)
-    const anchorPost = anchorCandidate?.posterior
-    const totalImpressions = planCandidates.reduce((s, c) => s + (c.posterior?.impressions ?? 0), 0)
-    const totalRevenueCents = planCandidates.reduce((s, c) => s + Number(c.posterior?.revenue_cents ?? 0), 0)
-    const anchorConvRate = anchorPost && anchorPost.impressions > 0
-      ? anchorPost.conversions / anchorPost.impressions
-      : null
-    const counterfactualRevenue = anchorConvRate !== null
-      ? Math.round(anchorConvRate * anchorCents * totalImpressions)
-      : null
-    const incrementalRevenueCents = counterfactualRevenue !== null
-      ? totalRevenueCents - counterfactualRevenue
-      : null
+    // Optimal by segment from most recent scientist run that has it
+    const latestRunWithSegments = planRuns.find(
+      r => r.optimal_by_segment && Object.keys(r.optimal_by_segment ?? {}).length > 1
+    )
 
     planData[planId] = {
       candidates: planCandidates,
@@ -149,17 +182,18 @@ export default async function PricingPage() {
       variableImportance: planVI,
       scientistRuns: planRuns,
       maturity,
-      demandModel,
+      demandModel,          // includes m_vec, q_vec for demand curve
       totalImpressions,
       totalRevenueCents,
       incrementalRevenueCents,
       anchorConvRate,
+      optimalBySegment: latestRunWithSegments?.optimal_by_segment ?? null,
     }
   }
 
   return (
     <PricingClient
-      plans={plans as Record<string, unknown>[]}
+      plans={plans}
       accountId={accountId}
       planData={planData}
     />

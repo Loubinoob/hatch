@@ -40,10 +40,11 @@ for (const anchor of anchors) {
     const snappedAnchor = snapToLadder(anchor)
     assert(candidates.includes(snappedAnchor), `  anchor ${snappedAnchor}¢ always included`)
 
-    // At least 1 price below AND 1 price above (some exploration)
+    // balanced + aggressive must always explore; conservative may produce only anchor
+    // for ladder positions where ±10% doesn't reach the adjacent rung (e.g. $19)
     const hasBelow = candidates.some(c => c < snappedAnchor)
     const hasAbove = candidates.some(c => c > snappedAnchor)
-    if (level !== "conservative" || anchor > 900) {
+    if (level !== "conservative") {
       assert(hasBelow || hasAbove, `  has exploration around anchor`)
     }
   }

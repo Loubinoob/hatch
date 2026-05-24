@@ -1,10 +1,10 @@
-"use client"
+﻿"use client"
 
 import { useEffect, useState, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { motion } from "framer-motion"
 import {
-  Loader2, TrendingDown, CalendarDays, BarChart2, ArrowRight,
+  Loader2, TrendingDown, TrendingUp, CalendarDays, BarChart2, ArrowRight,
   MousePointerClick, Clock, X, Monitor, Globe,
   DollarSign, Zap, Activity, Download, HelpCircle, FlaskConical, RotateCcw,
 } from "lucide-react"
@@ -16,9 +16,7 @@ import { formatMoney, formatPercent } from "@/lib/utils"
 import { subDays, format } from "date-fns"
 import Link from "next/link"
 import { formatPrice, revenuePerImpression } from "@/lib/price-ladder"
-import { evaluateDemandCurve, FEATURE_NAMES, N_FEATURES, DemandModelState } from "@/lib/demand-model"
-import type { SegmentInput } from "@/lib/segment"
-import { Area, AreaChart, ReferenceLine } from "recharts"
+import { FEATURE_NAMES, N_FEATURES, DemandModelState } from "@/lib/demand-model"
 
 const IS_DEV = process.env.NODE_ENV !== "production"
 
@@ -32,7 +30,7 @@ const DATE_RANGES = [
 
 type Tab = "funnel" | "behavior" | "breakdowns" | "quiz" | "pricing"
 
-// ─── Small card ──────────────────────────────────────────────────────────────
+// â”€â”€â”€ Small card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function KpiCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="bg-[#111114] border border-white/6 rounded-xl p-4">
@@ -43,7 +41,7 @@ function KpiCard({ label, value, sub }: { label: string; value: string; sub?: st
   )
 }
 
-// ─── Horizontal bar ──────────────────────────────────────────────────────────
+// â”€â”€â”€ Horizontal bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function HBar({ label, value, max, suffix = "" }: { label: string; value: number; max: number; suffix?: string }) {
   const pct = max > 0 ? (value / max) * 100 : 0
   return (
@@ -71,11 +69,11 @@ export default function AnalyticsPage() {
   const [dateRange, setDateRange] = useState<7 | 30 | 90>(30)
   const [accountId, setAccountId] = useState<string | null>(null)
 
-  // ── Funnel data ────────────────────────────────────────────────────────────
+  // â”€â”€ Funnel data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [funnel, setFunnel]           = useState<Funnel[]>([])
   const [revenueByDay, setRevenueByDay] = useState<{ date: string; revenue: number }[]>([])
 
-  // ── Behavior data ──────────────────────────────────────────────────────────
+  // â”€â”€ Behavior data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [dismissData, setDismissData]  = useState<{ method: string; count: number }[]>([])
   const [avgDwellMs, setAvgDwellMs]    = useState<number>(0)
   const [dwellBuckets, setDwellBuckets] = useState<{ bucket: string; count: number }[]>([])
@@ -83,16 +81,16 @@ export default function AnalyticsPage() {
   const [billingToggle, setBillingToggle] = useState<{ monthly: number; yearly: number }>({ monthly: 0, yearly: 0 })
   const [recentBehavior, setRecentBehavior] = useState<{ id: string; event_type: string; created_at: string; properties: Record<string, unknown> }[]>([])
 
-  // ── Behavior extra ─────────────────────────────────────────────────────────
+  // â”€â”€ Behavior extra â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [avgScrollDepth, setAvgScrollDepth] = useState<number>(0)
 
-  // ── Breakdown data ─────────────────────────────────────────────────────────
+  // â”€â”€ Breakdown data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [deviceBreakdown, setDeviceBreakdown]   = useState<{ device: string; rate: number; count: number }[]>([])
   const [sourceBreakdown, setSourceBreakdown]   = useState<{ source: string; rate: number; count: number }[]>([])
   const [countryBreakdown, setCountryBreakdown] = useState<{ country: string; rate: number; count: number }[]>([])
   const [variantBreakdown, setVariantBreakdown] = useState<{ name: string; conv: number; views: number }[]>([])
 
-  // ── Quiz data ──────────────────────────────────────────────────────────────
+  // â”€â”€ Quiz data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [quizStats, setQuizStats] = useState<{
     started: number
     completed: number
@@ -103,7 +101,7 @@ export default function AnalyticsPage() {
     dropoff: { question_id: string; answered: number; dropped: number }[]
   } | null>(null)
 
-  // ── Pricing data ───────────────────────────────────────────────────────────
+  // â”€â”€ Pricing data â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [pricingData, setPricingData] = useState<{
     plan: { id: string; name: string; price_monthly: number; dynamic_pricing_enabled?: boolean };
     candidates: { id: string; price_cents: number; is_anchor: boolean; impressions: number; conversions: number; rpi: number }[];
@@ -114,14 +112,14 @@ export default function AnalyticsPage() {
     livePrice: number | null;   // current price being served (realtime)
   }[]>([])
 
-  // ── Live price ticker (Supabase Realtime) ────────────────────────────────
+  // â”€â”€ Live price ticker (Supabase Realtime) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   // Updated per-plan when variant_assignments has a new INSERT with price data
-  const [livePrices, setLivePrices] = useState<Record<string, number>>({}) // planId → price_shown_cents
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({}) // planId â†’ price_shown_cents
 
   useEffect(() => { initAccount() }, [])
   useEffect(() => { if (accountId) loadAll(accountId, dateRange) }, [accountId, dateRange])
 
-  // ── Live price ticker via Realtime ────────────────────────────────────────
+  // â”€â”€ Live price ticker via Realtime â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (!accountId) return
     const channel = supabase.channel(`live-prices-${accountId}`)
@@ -168,7 +166,7 @@ export default function AnalyticsPage() {
     setLoading(false)
   }
 
-  // ── Funnel ─────────────────────────────────────────────────────────────────
+  // â”€â”€ Funnel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function loadFunnel(accId: string, since: string, days: number) {
     const eventTypes = ["page_view", "paywall_shown", "plan_selected", "checkout_started", "payment_success"]
     const counts = await Promise.all(
@@ -199,9 +197,9 @@ export default function AnalyticsPage() {
     setRevenueByDay(dayData)
   }
 
-  // ── Behavior ───────────────────────────────────────────────────────────────
+  // â”€â”€ Behavior â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function loadBehavior(accId: string, since: string) {
-    // Dismiss events — method breakdown
+    // Dismiss events â€” method breakdown
     const { data: dismissEvents } = await supabase.from("events")
       .select("properties")
       .eq("account_id", accId).eq("event_type", "paywall_dismissed")
@@ -209,7 +207,7 @@ export default function AnalyticsPage() {
 
     const methodCounts: Record<string, number> = {}
     let totalDwell = 0, dwellCount = 0
-    const dwellBucketMap: Record<string, number> = { "<5s": 0, "5–15s": 0, "15–45s": 0, "45s+": 0 }
+    const dwellBucketMap: Record<string, number> = { "<5s": 0, "5â€“15s": 0, "15â€“45s": 0, "45s+": 0 }
     for (const e of dismissEvents ?? []) {
       const p = (e.properties ?? {}) as Record<string, unknown>
       const m = (p.method as string) ?? "unknown"
@@ -218,8 +216,8 @@ export default function AnalyticsPage() {
         totalDwell += p.dwell_ms; dwellCount++
         const s = p.dwell_ms / 1000
         if (s < 5) dwellBucketMap["<5s"]++
-        else if (s < 15) dwellBucketMap["5–15s"]++
-        else if (s < 45) dwellBucketMap["15–45s"]++
+        else if (s < 15) dwellBucketMap["5â€“15s"]++
+        else if (s < 45) dwellBucketMap["15â€“45s"]++
         else dwellBucketMap["45s+"]++
       }
     }
@@ -261,7 +259,7 @@ export default function AnalyticsPage() {
         setAvgScrollDepth(Math.round(avg))
       }
     } catch {
-      // paywall_impressions table may not exist yet — skip
+      // paywall_impressions table may not exist yet â€” skip
     }
 
     // Recent behavioral events table
@@ -279,9 +277,9 @@ export default function AnalyticsPage() {
     )
   }
 
-  // ── Breakdowns ─────────────────────────────────────────────────────────────
+  // â”€â”€ Breakdowns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function loadBreakdowns(accId: string, since: string) {
-    // Device breakdown — fetch paywall_shown + payment_success and join by session_id
+    // Device breakdown â€” fetch paywall_shown + payment_success and join by session_id
     const [{ data: shown }, { data: paid }] = await Promise.all([
       supabase.from("events").select("session_id, properties")
         .eq("account_id", accId).eq("event_type", "paywall_shown").gte("created_at", since).limit(5000),
@@ -359,7 +357,7 @@ export default function AnalyticsPage() {
     })))
   }
 
-  // ── Quiz ──────────────────────────────────────────────────────────────────
+  // â”€â”€ Quiz â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function loadQuiz(accId: string, since: string) {
     const [{ count: started }, { count: completed }, { count: abandoned }] = await Promise.all([
       supabase.from("events").select("*", { count: "exact", head: true })
@@ -423,9 +421,9 @@ export default function AnalyticsPage() {
     })
   }
 
-  // ── Pricing ────────────────────────────────────────────────────────────────
+  // â”€â”€ Pricing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function loadPricing(accId: string) {
-    // Only select safe columns — dynamic_pricing_enabled & is_active may not exist
+    // Only select safe columns â€” dynamic_pricing_enabled & is_active may not exist
     // pre-migration. is_active filter is applied separately below to avoid a
     // query error if the column is missing.
     const { data: plans } = await supabase.from("plans")
@@ -457,7 +455,7 @@ export default function AnalyticsPage() {
         .select("id, plan_id, run_type, engine, data_maturity, reasoning, actions, created_at, model_used, optimal_by_segment")
         .eq("account_id", accId).in("plan_id", planIds)
         .order("created_at", { ascending: false }).limit(30),
-      // Demand models — global segment only for analytics (safe: table may not exist)
+      // Demand models â€” global segment only for analytics (safe: table may not exist)
       supabase.from("pricing_demand_models")
         .select("plan_id, n_obs, anchor_cents, feature_names, m_vec, q_vec")
         .in("plan_id", planIds)
@@ -523,7 +521,7 @@ export default function AnalyticsPage() {
     setPricingData(result)
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
+  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const totalRevenue  = revenueByDay.reduce((s, d) => s + d.revenue, 0)
   const paywallShown  = funnel[1]?.count ?? 0
   const conversions   = funnel[4]?.count ?? 0
@@ -606,7 +604,7 @@ export default function AnalyticsPage() {
       <div className="grid grid-cols-3 gap-4 mb-5">
         <KpiCard label="Revenue" value={formatMoney(totalRevenue)} sub={`Last ${dateRange} days`} />
         <KpiCard label="Conversions" value={conversions.toLocaleString()} sub="Payments completed" />
-        <KpiCard label="Conv. rate" value={formatPercent(convRate)} sub="Views → payments" />
+        <KpiCard label="Conv. rate" value={formatPercent(convRate)} sub="Views â†’ payments" />
       </div>
 
       {/* Tabs */}
@@ -625,7 +623,7 @@ export default function AnalyticsPage() {
         {loading && <Loader2 className="w-3.5 h-3.5 animate-spin text-[#52525B] ml-auto self-center mr-1" />}
       </div>
 
-      {/* ── FUNNEL TAB ──────────────────────────────────────────────────────── */}
+      {/* â”€â”€ FUNNEL TAB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {tab === "funnel" && (
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
           <div className="bg-[#111114] border border-white/6 rounded-xl p-6">
@@ -681,7 +679,7 @@ export default function AnalyticsPage() {
                 <div className="mt-4 pt-4 border-t border-white/6 flex items-center justify-between">
                   <p className="text-sm text-[#71717A]">
                     Overall: <span className="text-emerald-400 font-semibold">
-                      {funnel[0]?.count > 0 ? formatPercent((funnel[funnel.length - 1]?.count / funnel[0].count) * 100) : "—"}
+                      {funnel[0]?.count > 0 ? formatPercent((funnel[funnel.length - 1]?.count / funnel[0].count) * 100) : "â€”"}
                     </span>
                   </p>
                   <p className="text-xs text-[#52525B]">Last {dateRange} days</p>
@@ -713,15 +711,15 @@ export default function AnalyticsPage() {
         </motion.div>
       )}
 
-      {/* ── BEHAVIOR TAB ────────────────────────────────────────────────────── */}
+      {/* â”€â”€ BEHAVIOR TAB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {tab === "behavior" && (
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
           {/* KPIs */}
           <div className="grid grid-cols-5 gap-3">
-            <KpiCard label="Avg dwell time" value={avgDwellMs > 0 ? `${(avgDwellMs / 1000).toFixed(1)}s` : "—"} sub="Before dismiss" />
-            <KpiCard label="Abandon rate" value={abandonedRate > 0 ? formatPercent(abandonedRate) : "—"} sub="checkout_started → left" />
-            <KpiCard label="Yearly toggle" value={billingToggle.yearly > 0 ? `${billingToggle.yearly}×` : "—"} sub="Users who switched" />
-            <KpiCard label="Avg scroll depth" value={avgScrollDepth > 0 ? `${avgScrollDepth}%` : "—"} sub="paywall scroll" />
+            <KpiCard label="Avg dwell time" value={avgDwellMs > 0 ? `${(avgDwellMs / 1000).toFixed(1)}s` : "â€”"} sub="Before dismiss" />
+            <KpiCard label="Abandon rate" value={abandonedRate > 0 ? formatPercent(abandonedRate) : "â€”"} sub="checkout_started â†’ left" />
+            <KpiCard label="Yearly toggle" value={billingToggle.yearly > 0 ? `${billingToggle.yearly}Ã—` : "â€”"} sub="Users who switched" />
+            <KpiCard label="Avg scroll depth" value={avgScrollDepth > 0 ? `${avgScrollDepth}%` : "â€”"} sub="paywall scroll" />
             <KpiCard label="Dismissals" value={dismissData.reduce((s, d) => s + d.count, 0).toLocaleString()} sub={`Last ${dateRange} days`} />
           </div>
 
@@ -792,7 +790,7 @@ export default function AnalyticsPage() {
                       {Object.entries(e.properties)
                         .filter(([k]) => ["plan_id", "method", "dwell_ms", "to", "percent", "answer"].includes(k))
                         .map(([k, v]) => `${k}: ${k === "dwell_ms" ? `${((v as number) / 1000).toFixed(1)}s` : v}`)
-                        .join(" · ")}
+                        .join(" Â· ")}
                     </span>
                   </div>
                 ))}
@@ -802,7 +800,7 @@ export default function AnalyticsPage() {
         </motion.div>
       )}
 
-      {/* ── BREAKDOWNS TAB ──────────────────────────────────────────────────── */}
+      {/* â”€â”€ BREAKDOWNS TAB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {tab === "breakdowns" && (
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
@@ -860,7 +858,7 @@ export default function AnalyticsPage() {
               <Zap className="w-3.5 h-3.5 text-[#52525B]" /> Variant performance
             </h3>
             {variantBreakdown.length === 0
-              ? <p className="text-xs text-[#52525B] text-center py-6">No variants yet — create A/B tests in the AI optimizer</p>
+              ? <p className="text-xs text-[#52525B] text-center py-6">No variants yet â€” create A/B tests in the AI optimizer</p>
               : <div className="space-y-2.5">
                   {variantBreakdown.map(r => (
                     <HBar key={r.name} label={r.name} value={r.conv}
@@ -872,7 +870,7 @@ export default function AnalyticsPage() {
         </motion.div>
       )}
 
-      {/* ── QUIZ TAB ────────────────────────────────────────────────────────── */}
+      {/* â”€â”€ QUIZ TAB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {tab === "quiz" && (
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
           {!quizStats ? (
@@ -898,8 +896,8 @@ export default function AnalyticsPage() {
                           ((quizStats.convConverters / Math.max(quizStats.completed, 1)) -
                            (quizStats.convNonQuiz / Math.max(quizStats.started - quizStats.completed, 1))) * 100
                         )}`
-                      : "—"
-                    : "—"}
+                      : "â€”"
+                    : "â€”"}
                   sub="Quiz-completers vs skippers"
                 />
               </div>
@@ -943,7 +941,7 @@ export default function AnalyticsPage() {
                     {quizStats.dropoff.map((q, i) => (
                       <HBar
                         key={q.question_id}
-                        label={`Q${i + 1}: ${q.question_id.slice(0, 12)}…`}
+                        label={`Q${i + 1}: ${q.question_id.slice(0, 12)}â€¦`}
                         value={q.answered}
                         max={quizStats.started}
                       />
@@ -979,346 +977,31 @@ export default function AnalyticsPage() {
         </motion.div>
       )}
 
-      {/* ── PRICING TAB ─────────────────────────────────────────────────────── */}
+      {/* â”€â”€ PRICING TAB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {tab === "pricing" && (
-        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-5">
-          {pricingData.length === 0 ? (
-            <div className="bg-[#111114] border border-white/6 rounded-xl p-10 text-center">
-              <DollarSign className="w-8 h-8 text-[#52525B] mx-auto mb-3" />
-              <p className="text-sm font-medium text-white mb-1">No price candidates yet</p>
-              <p className="text-xs text-[#52525B] max-w-xs mx-auto">
-                Price candidates are generated automatically when your paywall is shown for the first time.
-              </p>
-            </div>
-          ) : (
-            pricingData.map(({ plan, candidates, maturity, topVariables, recentRuns, demandModel }) => {
-              const maxRpi = Math.max(...candidates.map(c => c.rpi), 1)
-              const winner = candidates.length > 0 ? candidates.reduce((a, b) => a.rpi >= b.rpi ? a : b, candidates[0]) : null
-              const maturityPct = maturity ? Math.round(maturity.maturity_score * 100) : 0
-              const engineLabel = maturity?.preferred_engine === "in_house_model" ? "Model-driven" : "Claude-driven"
-              const engineColor = maturity?.preferred_engine === "in_house_model" ? "text-purple-400" : "text-indigo-400"
-
-              // ── Demand model analytics ─────────────────────────────────────
-              // Elasticity: the price_norm coefficient (m[1]) captures d(logit)/d(price_norm)
-              // Negative = price-elastic (higher price → fewer conversions)
-              const priceCoeff = demandModel ? demandModel.m[1] : null
-              const elasticityLabel = priceCoeff === null ? null
-                : priceCoeff < -2   ? { text: "Highly elastic",    color: "text-red-400" }
-                : priceCoeff < -0.5 ? { text: "Price-sensitive",   color: "text-amber-400" }
-                : priceCoeff < 0.2  ? { text: "Moderate elasticity", color: "text-blue-400" }
-                : { text: "Inelastic / prestige",   color: "text-emerald-400" }
-
-              // Build demand curve for visualization
-              const neutralSeg: SegmentInput = { quiz_answers: {}, utm_source: null, device: "desktop", returning: false, hour_bucket: "morning" }
-              const priceLadder = candidates.length > 0
-                ? candidates.map(c => c.price_cents)
-                : []
-              const demandCurvePoints = demandModel && demandModel.n_obs > 0 && priceLadder.length > 1
-                ? evaluateDemandCurve(demandModel, priceLadder, neutralSeg)
-                : null
-
-              // Live price: most recent ticker for this plan (from realtime state)
-              // We don't store paywall_id per plan easily; check all paywall live prices
-              // via the plan's candidates (any price in candidates list)
-              const latestLiveKey = Object.keys(livePrices).find(k =>
-                k.startsWith("paywall:") && Object.values(livePrices).includes(livePrices[k])
-              )
-              const latestLivePrice = latestLiveKey ? livePrices[latestLiveKey] : null
-
-              // Optimal by segment from most recent scientist run
-              const latestRunWithSegments = recentRuns.find(r => r.optimal_by_segment && Object.keys(r.optimal_by_segment ?? {}).length > 1)
-              const optimalBySegment = latestRunWithSegments?.optimal_by_segment ?? null
-
-              return (
-                <div key={plan.id} className="bg-[#111114] border border-white/6 rounded-xl p-5 space-y-5">
-                  {/* Plan header */}
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h3 className="text-sm font-semibold text-white">{plan.name}</h3>
-                        {/* Live price ticker */}
-                        {latestLivePrice && (
-                          <span className="flex items-center gap-1 px-1.5 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded text-[9px] text-emerald-400 font-mono">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-                            {formatPrice(latestLivePrice)} live
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-[#52525B] mt-0.5">
-                        Anchor: {formatPrice(plan.price_monthly)} ·{" "}
-                        <span className={plan.dynamic_pricing_enabled ? "text-emerald-400" : "text-[#52525B]"}>
-                          {plan.dynamic_pricing_enabled ? "Dynamic pricing ON" : "Fixed price"}
-                        </span>
-                        {elasticityLabel && (
-                          <>
-                            {" "}·{" "}
-                            <span className={elasticityLabel.color}>{elasticityLabel.text}</span>
-                            {demandModel && (
-                              <span className="text-[#52525B]"> ({demandModel.n_obs} obs · ε={priceCoeff?.toFixed(2)})</span>
-                            )}
-                          </>
-                        )}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      {/* Data maturity badge */}
-                      {maturity && (
-                        <div className="text-right">
-                          <div className="flex items-center gap-2 justify-end mb-1">
-                            <span className={`text-[10px] font-medium ${engineColor}`}>{engineLabel}</span>
-                            <span className="text-[10px] text-[#52525B]">{maturityPct}% mature</span>
-                          </div>
-                          <div className="w-24 h-1 bg-white/5 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full ${maturity.preferred_engine === "in_house_model" ? "bg-purple-500" : "bg-indigo-500"}`}
-                              style={{ width: `${maturityPct}%` }}
-                            />
-                          </div>
-                        </div>
-                      )}
-                      {winner && candidates.some(c => c.impressions > 0) && (
-                        <div className="text-right">
-                          <p className="text-[10px] text-[#52525B]">Best price</p>
-                          <p className="text-sm font-mono font-semibold text-emerald-400">{formatPrice(winner.price_cents)}</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {candidates.length === 0 ? (
-                    <p className="text-xs text-[#52525B]">No candidates yet — will bootstrap on first impression</p>
-                  ) : (
-                    <>
-                      {/* Elasticity chart */}
-                      <div>
-                        <p className="text-[10px] text-[#52525B] mb-2">Revenue per impression by price point</p>
-                        <ResponsiveContainer width="100%" height={120}>
-                          <LineChart data={candidates.map(c => ({ price: formatPrice(c.price_cents), rpi: c.rpi, impressions: c.impressions }))}>
-                            <XAxis dataKey="price" tick={{ fill: "#52525B", fontSize: 10 }} axisLine={false} tickLine={false} />
-                            <YAxis tickFormatter={v => formatMoney(v)} tick={{ fill: "#52525B", fontSize: 10 }} axisLine={false} tickLine={false} />
-                            <Tooltip
-                              contentStyle={{ background: "#111114", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, fontSize: 11 }}
-                              formatter={(v, name) => [name === "rpi" ? formatMoney(Number(v)) : v, name === "rpi" ? "Rev/impression" : "Impressions"]}
-                            />
-                            <Line type="monotone" dataKey="rpi" stroke="#6366F1" strokeWidth={2} dot={{ fill: "#6366F1", r: 4 }} />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </div>
-
-                      {/* Candidates table */}
-                      <div className="space-y-1.5">
-                        {candidates.map(c => {
-                          const isWinner = winner && c.id === winner.id && c.impressions > 10
-                          return (
-                            <div key={c.id} className={`flex items-center gap-3 px-3 py-2 rounded-lg ${isWinner ? "bg-emerald-500/5 border border-emerald-500/15" : "bg-white/2"}`}>
-                              <span className="font-mono text-sm text-white w-14">{formatPrice(c.price_cents)}</span>
-                              {c.is_anchor && <span className="text-[9px] bg-white/8 text-[#71717A] px-1.5 py-0.5 rounded">anchor</span>}
-                              {isWinner && <span className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded">best RPI</span>}
-                              <div className="flex-1 grid grid-cols-3 gap-2 text-[11px] text-[#71717A]">
-                                <span>{c.impressions} imp.</span>
-                                <span>{c.impressions > 0 && c.conversions > 0 ? formatPercent((c.conversions / c.impressions) * 100) : "—"} conv</span>
-                                <span className="text-white">{c.rpi > 0 ? `${formatMoney(c.rpi)}/imp` : "—"}</span>
-                              </div>
-                              <div className="w-20 h-1 bg-white/5 rounded-full overflow-hidden">
-                                <div className="h-full rounded-full bg-indigo-500" style={{ width: `${(c.rpi / maxRpi) * 100}%` }} />
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </>
-                  )}
-
-                  {/* ── Demand curve (B.1) ─────────────────────────────────── */}
-                  {demandCurvePoints && demandCurvePoints.length >= 2 && (
-                    <div className="border-t border-white/6 pt-4">
-                      <div className="flex items-center justify-between mb-2">
-                        <p className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide">
-                          Demand curve — P(convert) vs price
-                        </p>
-                        <span className="text-[9px] text-[#52525B]">
-                          Chapelle-Li model · {demandModel?.n_obs} obs · 95% CI
-                        </span>
-                      </div>
-                      <ResponsiveContainer width="100%" height={160}>
-                        <AreaChart
-                          data={demandCurvePoints.map(pt => ({
-                            price: formatPrice(pt.price_cents),
-                            price_cents: pt.price_cents,
-                            conv: Math.round(pt.conv_prob * 1000) / 10,
-                            conv_low: Math.round(pt.conv_low * 1000) / 10,
-                            conv_high: Math.round(pt.conv_high * 1000) / 10,
-                            rpi: pt.rpi_cents,
-                          }))}
-                          margin={{ top: 4, right: 8, left: -16, bottom: 0 }}
-                        >
-                          <XAxis dataKey="price" tick={{ fill: "#52525B", fontSize: 10 }} axisLine={false} tickLine={false} />
-                          <YAxis
-                            tickFormatter={v => `${v}%`}
-                            tick={{ fill: "#52525B", fontSize: 10 }}
-                            axisLine={false} tickLine={false}
-                          />
-                          <Tooltip
-                            contentStyle={{ background: "#111114", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, fontSize: 11 }}
-                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                          formatter={(v: any, name: any) => {
-                              const n = typeof v === "number" ? v : 0
-                              if (name === "conv") return [`${n.toFixed(1)}%`, "Conv. prob (mean)"]
-                              if (name === "conv_high") return [`${n.toFixed(1)}%`, "Conv. CI high"]
-                              if (name === "conv_low") return [`${n.toFixed(1)}%`, "Conv. CI low"]
-                              return [v, name]
-                            }}
-                          />
-                          {/* CI band */}
-                          <Area type="monotone" dataKey="conv_high" stroke="none" fill="#6366F1" fillOpacity={0.12} legendType="none" />
-                          <Area type="monotone" dataKey="conv_low" stroke="none" fill="#111114" fillOpacity={1} legendType="none" />
-                          {/* Mean line */}
-                          <Area type="monotone" dataKey="conv" stroke="#6366F1" strokeWidth={2} fill="#6366F1" fillOpacity={0.05} dot={{ fill: "#6366F1", r: 3 }} />
-                          {/* Anchor reference line */}
-                          {demandModel && (
-                            <ReferenceLine
-                              x={formatPrice(demandModel.anchor_cents)}
-                              stroke="#F59E0B"
-                              strokeDasharray="4 3"
-                              label={{ value: "anchor", fill: "#F59E0B", fontSize: 9, position: "top" }}
-                            />
-                          )}
-                        </AreaChart>
-                      </ResponsiveContainer>
-                      <p className="text-[10px] text-[#52525B] mt-1">
-                        Shaded band = 95% predictive interval. Dashed line = anchor price.
-                        RPI optimal: {winner ? formatPrice(winner.price_cents) : "—"}
-                      </p>
-                    </div>
-                  )}
-
-                  {/* ── Optimal price by segment (B.6) ─────────────────────── */}
-                  {optimalBySegment && Object.keys(optimalBySegment).length > 1 && (
-                    <div className="border-t border-white/6 pt-4">
-                      <p className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide mb-3">
-                        Optimal price by segment
-                      </p>
-                      <div className="space-y-1.5">
-                        {Object.entries(optimalBySegment)
-                          .sort(([a], [b]) => a === "global" ? -1 : b === "global" ? 1 : 0)
-                          .slice(0, 8)
-                          .map(([seg, priceCents]) => (
-                            <div key={seg} className="flex items-center gap-3">
-                              <span className="text-[10px] text-[#71717A] w-32 truncate">
-                                {seg === "global" ? "🌐 global" : seg}
-                              </span>
-                              <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
-                                <div
-                                  className="h-full bg-violet-500 rounded-full"
-                                  style={{ width: `${((priceCents as number) / Math.max(...Object.values(optimalBySegment) as number[], 1)) * 100}%` }}
-                                />
-                              </div>
-                              <span className="text-[10px] font-mono text-white w-10 text-right">
-                                {formatPrice(priceCents as number)}
-                              </span>
-                            </div>
-                          ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Variable importance */}
-                  {topVariables.length > 0 && (
-                    <div className="border-t border-white/6 pt-4">
-                      <p className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide mb-3">
-                        Pricing variables — what drives WTP
-                      </p>
-                      <div className="space-y-3">
-                        {topVariables.map((v) => {
-                          const maxOptimal = Math.max(...Object.values(v.optimal_price_by_value), 1)
-                          return (
-                            <div key={v.variable_name}>
-                              <div className="flex items-center justify-between mb-1">
-                                <span className="text-[11px] font-medium text-white">{v.variable_name}</span>
-                                <span className="text-[10px] text-[#52525B]">
-                                  importance {Math.round(v.importance_score * 100)}% · spread {formatPrice(v.revenue_spread_cents)}/imp
-                                </span>
-                              </div>
-                              <div className="space-y-1">
-                                {Object.entries(v.optimal_price_by_value).slice(0, 4).map(([val, priceCents]) => (
-                                  <div key={val} className="flex items-center gap-2">
-                                    <span className="text-[10px] text-[#71717A] w-20 truncate">{val}</span>
-                                    <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
-                                      <div
-                                        className="h-full bg-violet-500 rounded-full"
-                                        style={{ width: `${(priceCents / maxOptimal) * 100}%` }}
-                                      />
-                                    </div>
-                                    <span className="text-[10px] font-mono text-white w-10 text-right">{formatPrice(priceCents)}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Scientist run timeline */}
-                  {recentRuns.length > 0 && (
-                    <div className="border-t border-white/6 pt-4">
-                      <p className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide mb-3">
-                        Recent scientist runs
-                      </p>
-                      <div className="space-y-2">
-                        {recentRuns.map((run) => (
-                          <div key={run.id} className="flex gap-3 text-[11px]">
-                            <div className="flex flex-col items-center">
-                              <div className={`w-2 h-2 rounded-full mt-0.5 shrink-0 ${run.engine === "claude" ? "bg-indigo-500" : "bg-purple-500"}`} />
-                              <div className="flex-1 w-px bg-white/6 mt-1" />
-                            </div>
-                            <div className="pb-2 flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-0.5">
-                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${
-                                  run.engine === "claude" ? "bg-indigo-500/15 text-indigo-400" : "bg-purple-500/15 text-purple-400"
-                                }`}>{run.engine}</span>
-                                <span className="text-[#52525B]">{run.run_type}</span>
-                                <span className="text-[#52525B]">·</span>
-                                <span className="text-[#52525B]">{Math.round((run.data_maturity ?? 0) * 100)}% mature</span>
-                                <span className="text-[#52525B] ml-auto shrink-0">
-                                  {format(new Date(run.created_at), "MMM d HH:mm")}
-                                </span>
-                              </div>
-                              {run.reasoning && (
-                                <p className="text-[#71717A] line-clamp-2">{run.reasoning}</p>
-                              )}
-                              {Array.isArray(run.actions) && run.actions.length > 0 && (
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                  {(run.actions as { action: string; price_cents: number }[]).slice(0, 4).map((a, i) => (
-                                    <span key={i} className={`text-[9px] px-1.5 py-0.5 rounded ${
-                                      a.action === "add" ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"
-                                    }`}>
-                                      {a.action} {formatPrice(a.price_cents)}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )
-            })
-          )}
-
-          {/* ── Dev-only Simulator Panel ──────────────────────────────────── */}
-          {IS_DEV && <SimulatorPanel accountId={accountId} />}
+        <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+          <div className="bg-[#111114] border border-white/6 rounded-xl p-10 text-center">
+            <TrendingUp className="w-8 h-8 text-indigo-400 mx-auto mb-3" />
+            <p className="text-sm font-semibold text-white mb-1">Dynamic Pricing has its own page</p>
+            <p className="text-xs text-[#71717A] mb-5 max-w-xs mx-auto">
+              Full demand curves, A/B test stats, AI decision timeline, variable importance, and founder controls.
+            </p>
+            <Link
+              href="/pricing"
+              className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition-colors"
+            >
+              Open Dynamic Pricing <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
         </motion.div>
       )}
+      {/* â”€â”€ Dev-only Simulator Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {IS_DEV && <SimulatorPanel accountId={accountId} />}
     </div>
   )
 }
 
-// ─── Simulator Panel (dev only) ───────────────────────────────────────────────
+// â”€â”€â”€ Simulator Panel (dev only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 type SimReport = {
   served_price_distribution_over_time: { after_n: number; price_share: Record<string, number>; avg_price_cents: number }[]
   final_optimal_by_segment: Record<string, number>
@@ -1342,7 +1025,7 @@ function SimulatorPanel({ accountId }: { accountId: string | null }) {
   const [report, setReport] = useState<SimReport | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  // Plan list — loaded independently using only safe columns
+  // Plan list â€” loaded independently using only safe columns
   const [plans, setPlans] = useState<SimPlan[]>([])
   const [plansLoading, setPlansLoading] = useState(false)
   const [planId, setPlanId] = useState("")
@@ -1357,7 +1040,7 @@ function SimulatorPanel({ accountId }: { accountId: string | null }) {
     if (!open || !accountId) return
     setPlansLoading(true)
     supabase.from("plans")
-      // Only safe columns — avoids PGRST error if optional columns are missing
+      // Only safe columns â€” avoids PGRST error if optional columns are missing
       .select("id, name, price_monthly")
       .eq("account_id", accountId)
       .order("name")
@@ -1422,7 +1105,7 @@ function SimulatorPanel({ accountId }: { accountId: string | null }) {
         <FlaskConical className="w-3.5 h-3.5 text-amber-400 shrink-0" />
         <span className="text-xs font-semibold text-amber-400">Price Bandit Simulator</span>
         <span className="text-[10px] text-amber-500/70 ml-1">dev only</span>
-        <span className="ml-auto text-[10px] text-amber-500/50">{open ? "▲" : "▼"}</span>
+        <span className="ml-auto text-[10px] text-amber-500/50">{open ? "â–²" : "â–¼"}</span>
       </button>
 
       {open && (
@@ -1439,7 +1122,7 @@ function SimulatorPanel({ accountId }: { accountId: string | null }) {
               <label className="text-[10px] text-[#71717A] mb-1 block">Plan</label>
               {plansLoading ? (
                 <div className="flex items-center gap-1.5 h-7 text-[10px] text-[#52525B]">
-                  <Loader2 className="w-3 h-3 animate-spin" /> Loading plans…
+                  <Loader2 className="w-3 h-3 animate-spin" /> Loading plansâ€¦
                 </div>
               ) : plans.length === 0 ? (
                 <div className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-2 py-1.5">
@@ -1453,7 +1136,7 @@ function SimulatorPanel({ accountId }: { accountId: string | null }) {
                 >
                   {plans.map(p => (
                     <option key={p.id} value={p.id}>
-                      {p.name} — ${(p.price_monthly / 100).toFixed(0)}/mo
+                      {p.name} â€” ${(p.price_monthly / 100).toFixed(0)}/mo
                     </option>
                   ))}
                 </select>
@@ -1468,7 +1151,7 @@ function SimulatorPanel({ accountId }: { accountId: string | null }) {
               />
             </div>
             <div>
-              <label className="text-[10px] text-[#71717A] mb-1 block">Midpoint (¢) — WTP peak</label>
+              <label className="text-[10px] text-[#71717A] mb-1 block">Midpoint (Â¢) â€” WTP peak</label>
               <input
                 type="number" value={midpoint} onChange={e => setMidpoint(Number(e.target.value))}
                 min={500} max={20000} step={100}
@@ -1500,7 +1183,7 @@ function SimulatorPanel({ accountId }: { accountId: string | null }) {
               className="flex items-center gap-1.5 px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 disabled:cursor-not-allowed text-black text-xs font-semibold rounded-lg transition-colors"
             >
               {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <FlaskConical className="w-3 h-3" />}
-              {running ? "Simulating…" : "Run simulation"}
+              {running ? "Simulatingâ€¦" : "Run simulation"}
             </button>
             <button
               onClick={resetSim}
@@ -1517,7 +1200,7 @@ function SimulatorPanel({ accountId }: { accountId: string | null }) {
               <p className="font-semibold">Simulation error</p>
               <p className="font-mono text-[10px] text-red-300/80 whitespace-pre-wrap break-all">{error}</p>
               {error.includes("migration") || error.includes("Schema") ? (
-                <p className="text-red-400/70">→ Run <code className="font-mono bg-red-500/10 px-1 rounded">supabase db push</code> on your production database to apply pending migrations.</p>
+                <p className="text-red-400/70">â†’ Run <code className="font-mono bg-red-500/10 px-1 rounded">supabase db push</code> on your production database to apply pending migrations.</p>
               ) : null}
             </div>
           )}
@@ -1536,7 +1219,7 @@ function SimulatorPanel({ accountId }: { accountId: string | null }) {
                 <div className="bg-[#111114] rounded-lg p-3">
                   <p className="text-[10px] text-[#52525B] mb-0.5">Variable found</p>
                   <p className={`text-sm font-semibold ${report.top_variable_match ? "text-emerald-400" : "text-red-400"}`}>
-                    {report.top_variable_found ?? "—"} {report.top_variable_match ? "✓" : "✗"}
+                    {report.top_variable_found ?? "â€”"} {report.top_variable_match ? "âœ“" : "âœ—"}
                   </p>
                   <p className="text-[10px] text-[#52525B]">expected: {report.top_variable_expected}</p>
                 </div>
@@ -1570,7 +1253,7 @@ function SimulatorPanel({ accountId }: { accountId: string | null }) {
                     </LineChart>
                   </ResponsiveContainer>
                   <p className="text-[10px] text-[#52525B] mt-1">
-                    Ground-truth optimal: {formatPrice(report.ground_truth_optimal_by_segment.global ?? 0)} · System found: {formatPrice(report.final_optimal_by_segment.global ?? 0)}
+                    Ground-truth optimal: {formatPrice(report.ground_truth_optimal_by_segment.global ?? 0)} Â· System found: {formatPrice(report.final_optimal_by_segment.global ?? 0)}
                   </p>
                 </div>
               )}
