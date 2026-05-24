@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { Plus, Trash2, Loader2, Check, Star, GripVertical, X } from "lucide-react"
 import { formatMoney } from "@/lib/utils"
 import { toast } from "sonner"
+import { insertPlanResilient, updatePlanResilient, withPlanDefaults } from "@/lib/plan-resilience"
 import {
   DndContext,
   closestCenter,
@@ -195,7 +196,9 @@ export default function PlansPage() {
     if (!profile) return
     setAccountId(profile.account_id)
     const { data } = await supabase.from("plans").select("*").eq("account_id", profile.account_id).order("sort_order")
-    setPlans(data ?? [])
+    // Apply safe defaults so the UI never crashes when columns are missing (pre-migration)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setPlans((data ?? []).map((p: any) => withPlanDefaults(p) as Plan))
     setLoading(false)
   }
 
@@ -247,19 +250,33 @@ export default function PlansPage() {
     let savedPlanId: string | null = null
 
     if (editing) {
-      const { error } = await supabase.from("plans").update({ ...form }).eq("id", editing.id)
-      if (error) { toast.error(error.message); setSaving(false); return }
+      const result = await updatePlanResilient<{ id: string }>(supabase, editing.id, { ...form })
+      if (result.error) { toast.error(result.error.message); setSaving(false); return }
       savedPlanId = editing.id
-      toast.success("Plan updated")
+      if (result.droppedFields.length > 0) {
+        toast.success("Plan updated — some advanced settings need a database update to take effect.", {
+          description: `Columns not yet in DB: ${result.droppedFields.join(", ")}. Run: supabase db push`,
+          duration: 8000,
+        })
+      } else {
+        toast.success("Plan updated")
+      }
     } else {
-      const { data: newPlan, error } = await supabase.from("plans").insert({
+      const result = await insertPlanResilient<{ id: string }>(supabase, {
         ...form,
         account_id: accountId,
         sort_order: plans.length,
-      }).select("id").single()
-      if (error) { toast.error(error.message); setSaving(false); return }
-      savedPlanId = newPlan?.id ?? null
-      toast.success("Plan created")
+      })
+      if (result.error) { toast.error(result.error.message); setSaving(false); return }
+      savedPlanId = result.data?.id ?? null
+      if (result.droppedFields.length > 0) {
+        toast.success("Plan created — some advanced settings need a database update to take effect.", {
+          description: `Columns not yet in DB: ${result.droppedFields.join(", ")}. Run: supabase db push`,
+          duration: 8000,
+        })
+      } else {
+        toast.success("Plan created")
+      }
     }
 
     // Cold-start value-based pricing candidates (Claude Opus, falls back to mechanical)
