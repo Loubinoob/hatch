@@ -36,6 +36,50 @@ export function bucketHour(date = new Date()): SegmentInput["hour_bucket"] {
   return "evening"
 }
 
+/**
+ * Pricing-specific segment hash — only hashes the variables the scientist has
+ * validated as price-discriminating. Returns "global" when activeKeys is empty
+ * so all traffic is pooled into a single posterior row.
+ *
+ * Variable name mapping (matches pricing_variable_importance.variable_name):
+ *   "utm_source"   → bucketUtm(input.utm_source)
+ *   "device_type"  → input.device ?? "desktop"
+ *   "is_returning" → String(input.returning ?? false)
+ *   "country"      → input.country ?? "unknown"
+ *   "q_<key>"      → input.quiz_answers[key]  (e.g. "q_role")
+ */
+export function computePricingSegmentHash(
+  input: SegmentInput,
+  activeKeys: string[],
+): string {
+  if (!activeKeys.length) return "global"
+
+  const parts: string[] = []
+
+  for (const key of activeKeys.sort()) {
+    let value: string | undefined
+
+    if (key === "utm_source") {
+      value = bucketUtm(input.utm_source)
+    } else if (key === "device_type") {
+      value = input.device ?? "desktop"
+    } else if (key === "is_returning") {
+      value = String(input.returning ?? false)
+    } else if (key === "country") {
+      value = input.country ?? "unknown"
+    } else if (key.startsWith("q_")) {
+      const qKey = key.slice(2)  // strip "q_" prefix
+      value = input.quiz_answers?.[qKey] ?? "unknown"
+    }
+
+    if (value !== undefined) {
+      parts.push(`${key}=${value}`)
+    }
+  }
+
+  return parts.length ? parts.join("|") : "global"
+}
+
 export function computeSegmentHash(input: SegmentInput): {
   hash: string
   features: Record<string, string | boolean>

@@ -47,3 +47,22 @@ export function betaSample(alpha: number, beta: number): number {
   const y = gammaSample(b)
   return x / (x + y)
 }
+
+/**
+ * Approximate 95% credible interval for Beta(alpha, beta) via normal approximation
+ * on the mean ± 1.96 * std. Tight enough for elimination decisions (adaptive bandit).
+ *
+ * Returns [lo, hi] both clamped to [0, 1].
+ */
+export function betaCI(alpha: number, beta: number): [number, number] {
+  const a = Math.max(1, alpha)
+  const b = Math.max(1, beta)
+  const n = a + b
+  const mean = a / n
+  const variance = (a * b) / (n * n * (n + 1))
+  const std = Math.sqrt(variance)
+  const z = 1.96
+  const lo = Math.max(0, mean - z * std)
+  const hi = Math.min(1, mean + z * std)
+  return [lo, hi]
+}

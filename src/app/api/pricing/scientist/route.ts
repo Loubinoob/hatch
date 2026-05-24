@@ -91,10 +91,10 @@ export async function POST(request: NextRequest) {
     accountId = profile.account_id
   }
 
-  // Load plan
+  // Load plan (include pricing_segment_keys for activation logic)
   const { data: plan } = await service
     .from("plans")
-    .select("id, name, price_monthly, price_floor_cents, price_ceiling_cents, dynamic_pricing_enabled, account_id")
+    .select("id, name, price_monthly, price_floor_cents, price_ceiling_cents, dynamic_pricing_enabled, account_id, pricing_segment_keys")
     .eq("id", plan_id)
     .eq("account_id", accountId)
     .single()
@@ -148,6 +148,63 @@ export async function POST(request: NextRequest) {
   // Persist variable importance
   if (variableImportance.length > 0) {
     await persistVariableImportance(service, accountId, plan_id, variableImportance)
+  }
+
+  // ── Activate / deactivate pricing segment keys ────────────────────────────
+  // A variable is activated as a pricing dimension when:
+  //   1. importance_score >= 0.4  (meaningful WTP variation across values)
+  //   2. min volume per value >= 50 impressions  (enough data to trust the signal)
+  //   3. revenue spread vs global RPI >= 15%  (economically worth the fragmentation)
+  // Top 2 variables max — more would fragment segments too aggressively.
+  const globalRpi = elasticityGlobal?.optimal_price_cents
+    ? (elasticityGlobal.curve.find(p => p.price_cents === elasticityGlobal.optimal_price_cents)?.rpi_cents ?? 0)
+    : 0
+
+  const qualifiedKeys: string[] = []
+  for (const vi of variableImportance) {
+    if (qualifiedKeys.length >= 2) break
+
+    const meetsImportance = vi.importance_score >= 0.4
+    const optimalPrices = Object.values(vi.optimal_price_by_value ?? {}) as number[]
+    const meetsVolume = Object.values(vi.optimal_price_by_value ?? {}).length > 0 &&
+      // proxy: importance_score correlates with volume; check top-level sample_size if available
+      (vi as { sample_size?: number }).sample_size == null
+        ? true  // no sample_size field — rely on importance_score
+        : ((vi as { sample_size?: number }).sample_size ?? 0) / Math.max(1, optimalPrices.length) >= 50
+
+    const revenueSpread = optimalPrices.length >= 2
+      ? Math.max(...optimalPrices) - Math.min(...optimalPrices)
+      : 0
+    const meetsRevenue = globalRpi > 0
+      ? revenueSpread / globalRpi >= 0.15
+      : revenueSpread > 0  // if no global RPI, any spread qualifies
+
+    if (meetsImportance && meetsVolume && meetsRevenue) {
+      qualifiedKeys.push(vi.variable_name)
+    }
+  }
+
+  // Only update if keys actually changed
+  const currentKeys: string[] = Array.isArray(plan.pricing_segment_keys)
+    ? plan.pricing_segment_keys
+    : []
+  const keysChanged =
+    qualifiedKeys.length !== currentKeys.length ||
+    qualifiedKeys.some(k => !currentKeys.includes(k))
+
+  let segmentKeysNote = ""
+  if (keysChanged) {
+    await service
+      .from("plans")
+      .update({ pricing_segment_keys: qualifiedKeys })
+      .eq("id", plan_id)
+
+    if (qualifiedKeys.length === 0) {
+      segmentKeysNote = `Deactivated all pricing segments — pooling all traffic globally (was: [${currentKeys.join(", ")}]).`
+    } else {
+      segmentKeysNote = `Updated pricing segment keys: [${qualifiedKeys.join(", ")}] (was: [${currentKeys.join(", ")}]). Bandit will now segment by these variables.`
+    }
+    console.log(`[scientist] plan=${plan_id} ${segmentKeysNote}`)
   }
 
   // ── Load past pricing insights from agent_insights ────────────────────────
@@ -398,7 +455,9 @@ Respond in 2-4 sentences, no JSON, no bullet points.`,
     run_type: runType,
     engine: decision.engine,
     data_maturity: maturityScore,
-    reasoning: decision.reasoning,
+    reasoning: segmentKeysNote
+      ? `${decision.reasoning}\n\n[Segmentation] ${segmentKeysNote}`
+      : decision.reasoning,
     actions: actionsApplied,
     model_used: modelUsed,
     tokens_in: tokensIn || null,
@@ -420,6 +479,8 @@ Respond in 2-4 sentences, no JSON, no bullet points.`,
     actions_applied: actionsApplied,
     optimal_by_segment: decision.optimalBySegment,
     top_variables: decision.topVariables.slice(0, 3),
+    pricing_segment_keys: qualifiedKeys,
+    segment_keys_changed: keysChanged,
     duration_ms: Date.now() - t0,
   })
 }

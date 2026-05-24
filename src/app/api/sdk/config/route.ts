@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createServiceClient } from "@supabase/supabase-js"
-import { computeSegmentHash, bucketHour } from "@/lib/segment"
+import { computeSegmentHash, computePricingSegmentHash, bucketHour, SegmentInput } from "@/lib/segment"
 import { withDefaults } from "@/lib/paywall-resilience"
 import { generatePriceCandidates, snapToLadder } from "@/lib/price-ladder"
 import { selectPriceCandidate } from "@/lib/price-bandit"
@@ -40,7 +40,8 @@ async function fetchPlansForIds(supabase: any, planIds: string[]): Promise<any[]
 // ─── Revenue-weighted price bandit ───────────────────────────────────────────
 // For each plan with dynamic_pricing_enabled, select a price candidate via
 // Thompson sampling maximising EXPECTED REVENUE = P(convert) × price.
-// Silently falls back to the plan's fixed price if anything fails.
+// Uses a pricing-specific segment hash (only validated discriminating variables)
+// to avoid over-fragmentation. Silently falls back to fixed price if anything fails.
 async function applyDynamicPricing(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
@@ -50,9 +51,10 @@ async function applyDynamicPricing(
   paywallId: string,
   accountId: string,
   segmentHash: string,
+  segmentInput: SegmentInput,
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<{ plans: any[]; priceAssignments: Record<string, { candidateId: string; cents: number }> }> {
-  const priceAssignments: Record<string, { candidateId: string; cents: number }> = {}
+): Promise<{ plans: any[]; priceAssignments: Record<string, { candidateId: string; cents: number; pricingSegHash: string }> }> {
+  const priceAssignments: Record<string, { candidateId: string; cents: number; pricingSegHash: string }> = {}
 
   const enrichedPlans = await Promise.all(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,6 +62,13 @@ async function applyDynamicPricing(
       try {
         // Skip if dynamic pricing disabled on this plan
         if (plan.dynamic_pricing_enabled === false) return plan
+
+        // Compute pricing-specific segment hash for this plan
+        // (only hashes variables the scientist validated as price-discriminating)
+        const activeKeys: string[] = Array.isArray(plan.pricing_segment_keys)
+          ? plan.pricing_segment_keys
+          : []
+        const pricingSegHash = computePricingSegmentHash(segmentInput, activeKeys)
 
         // Fetch active candidates for this plan + interval
         const { data: candidates } = await supabase
@@ -75,13 +84,13 @@ async function applyDynamicPricing(
           return plan  // serve fixed price this impression; bandit kicks in next time
         }
 
-        // Fetch posteriors for this segment (+ global fallback for warmup coverage check)
+        // Fetch posteriors for this pricing segment (+ global fallback)
         const [{ data: segPosts }, { data: globalPosts }] = await Promise.all([
           supabase
             .from("price_point_posteriors")
             .select("price_candidate_id, alpha, beta, impressions")
             .in("price_candidate_id", candidates.map((c: { id: string }) => c.id))
-            .eq("segment_hash", segmentHash),
+            .eq("segment_hash", pricingSegHash),
           supabase
             .from("price_point_posteriors")
             .select("price_candidate_id, alpha, beta, impressions")
@@ -89,7 +98,7 @@ async function applyDynamicPricing(
             .eq("segment_hash", "global"),
         ])
 
-        // Merge: prefer segment-level if available, fall back to global for warmup decision
+        // Merge: prefer pricing-segment if available, fall back to global for warmup
         const segMap = new Map(
           (segPosts ?? []).map((p: { price_candidate_id: string; alpha: number; beta: number; impressions: number }) =>
             [p.price_candidate_id, p]
@@ -100,51 +109,49 @@ async function applyDynamicPricing(
             [p.price_candidate_id, p]
           )
         )
-        // For each candidate: use segment posterior if present, otherwise global
         const effectivePosteriors = candidates.map((c: { id: string }) => {
           return segMap.get(c.id) ?? globalMap.get(c.id) ?? { price_candidate_id: c.id, alpha: 1, beta: 1, impressions: 0 }
         })
 
-        const postMap = segMap  // keep for backwards compat (missing candidate bootstrap below)
-
-        // Revenue-weighted Thompson with warmup guard
+        // Revenue-weighted Thompson with warmup guard + adaptive elimination
         const { candidate: chosen, mode: selectionMode } = selectPriceCandidate(candidates, effectivePosteriors)
-        console.log(`[sdk/config] ${selectionMode === "warmup" ? "warmup" : "thompson"} pick for plan "${plan.name}": ${chosen.price_cents}¢ (segment ${segmentHash.slice(0, 20)})`)
+        console.log(`[sdk/config] ${selectionMode} pick for plan "${plan.name}": ${chosen.price_cents}¢ (seg ${pricingSegHash.slice(0, 30)})`)
 
-        // Bootstrap posteriors for any candidate not seen in this segment yet
+        // Bootstrap posteriors for any candidate not yet seen in this pricing segment
         const missingCandidates = candidates.filter((c: { id: string }) => !segMap.has(c.id))
         if (missingCandidates.length > 0) {
           await supabase.from("price_point_posteriors").upsert(
             missingCandidates.map((c: { id: string }) => ({
               price_candidate_id: c.id,
-              segment_hash: segmentHash,
+              segment_hash: pricingSegHash,
               alpha: 1, beta: 1, impressions: 0, conversions: 0, revenue_cents: 0,
             })),
             { onConflict: "price_candidate_id,segment_hash", ignoreDuplicates: true }
           )
         }
 
-        // Record price assignment
-        priceAssignments[plan.id] = { candidateId: chosen.id, cents: chosen.price_cents }
+        // Record price assignment (includes pricingSegHash for variant_assignments update)
+        priceAssignments[plan.id] = { candidateId: chosen.id, cents: chosen.price_cents, pricingSegHash }
 
-        // Return plan with overridden price
-        const overridden = { ...plan, price_monthly: chosen.price_cents, _dynamic_price_candidate_id: chosen.id }
-        return overridden
+        return { ...plan, price_monthly: chosen.price_cents, _dynamic_price_candidate_id: chosen.id }
 
       } catch (err) {
-        // Pricing bandit failure is non-fatal — serve fixed price
         console.warn(`[sdk/config] Price bandit failed for plan ${plan.id}:`, err)
         return plan
       }
     })
   )
 
-  // Update variant_assignments with chosen price(s) for the featured plan
+  // Update variant_assignments with chosen price + pricing_segment_hash
   const featuredPlanId = plans.find((p: { is_popular: boolean }) => p.is_popular)?.id ?? plans[0]?.id
   if (sessionId && featuredPlanId && priceAssignments[featuredPlanId]) {
     const pa = priceAssignments[featuredPlanId]
     await supabase.from("variant_assignments")
-      .update({ price_candidate_id: pa.candidateId, price_shown_cents: pa.cents })
+      .update({
+        price_candidate_id: pa.candidateId,
+        price_shown_cents: pa.cents,
+        pricing_segment_hash: pa.pricingSegHash,
+      })
       .eq("paywall_id", paywallId)
       .eq("session_id", sessionId)
   }
@@ -219,13 +226,14 @@ export async function GET(request: NextRequest) {
     try { quizAnswers = JSON.parse(quizAnswersRaw) } catch { /* ignore */ }
   }
 
-  const { hash: segmentHash, features: segmentFeatures } = computeSegmentHash({
+  const segmentInput: SegmentInput = {
     quiz_answers:  quizAnswers,
     utm_source:    utmSource,
     device:        deviceRaw ?? "desktop",
     returning:     returningRaw === "1",
     hour_bucket:   hourRaw ?? bucketHour(),
-  })
+  }
+  const { hash: segmentHash, features: segmentFeatures } = computeSegmentHash(segmentInput)
 
   // ── Single paywall by ID ────────────────────────────────────────────────────
   if (paywallId) {
@@ -264,7 +272,7 @@ export async function GET(request: NextRequest) {
 
     // Apply dynamic pricing before variant merge
     const { plans: pricedPlans } = await applyDynamicPricing(
-      supabase, plans, sessionId, paywallId, user.account_id, segmentHash
+      supabase, plans, sessionId, paywallId, user.account_id, segmentHash, segmentInput
     )
     const base = withDefaults({ ...paywall, plans: pricedPlans })
     const enriched = await applyVariantContextual(
@@ -313,7 +321,7 @@ export async function GET(request: NextRequest) {
   // Dynamic pricing on the first (featured) paywall's plans
   const firstPaywall = paywallsWithPlans[0]
   const { plans: pricedFirstPlans } = await applyDynamicPricing(
-    supabase, firstPaywall.plans ?? [], sessionId, firstPaywall.id, user.account_id, segmentHash
+    supabase, firstPaywall.plans ?? [], sessionId, firstPaywall.id, user.account_id, segmentHash, segmentInput
   )
   const firstWithPricing = { ...firstPaywall, plans: pricedFirstPlans }
 
