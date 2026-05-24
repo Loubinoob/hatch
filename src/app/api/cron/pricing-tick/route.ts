@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic"
 
 /**
  * GET /api/cron/pricing-tick
- * Runs every 6h via Vercel cron.
+ * Runs daily at 3am via Vercel cron (Hobby plan: once/day max).
  * Triggers the pricing scientist for plans with enough new impressions.
  *
  * Conditions to trigger:
