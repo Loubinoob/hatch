@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation"
 import { motion } from "framer-motion"
 import {
   LayoutDashboard, CreditCard, Layers, Users, BarChart2,
-  Settings, Mail, LogOut, Zap, ChevronRight, BookOpen, Brain
+  Settings, Mail, LogOut, Zap, ChevronRight, BookOpen, Brain, TrendingUp
 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { useRouter } from "next/navigation"
@@ -16,6 +16,7 @@ const NAV = [
   { href: "/integrate", label: "Install", icon: Zap },
   { href: "/paywalls", label: "Paywalls", icon: Layers },
   { href: "/plans", label: "Plans", icon: CreditCard },
+  { href: "/pricing", label: "Pricing", icon: TrendingUp },
   { href: "/customers", label: "Customers", icon: Users },
   { href: "/analytics", label: "Analytics", icon: BarChart2 },
   { href: "/recovery", label: "Recovery", icon: Mail, comingSoon: true },

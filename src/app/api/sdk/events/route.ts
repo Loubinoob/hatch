@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createServiceClient } from "@supabase/supabase-js"
+import { onlineUpdateDemandModel } from "@/lib/demand-model"
+import type { SegmentInput } from "@/lib/segment"
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -186,6 +188,66 @@ export async function POST(request: NextRequest) {
           .eq("price_candidate_id", assignment.price_candidate_id)
           .eq("segment_hash", segHash)
       }
+    }
+  }
+
+  // ─── demand model: online Bayesian update ─────────────────────────────────
+  // paywall_shown  → y=0 (impression, no conversion yet)
+  // payment_success → y=1 (conversion confirmed)
+  // paywall_dismissed → y=0 (confirmed non-convert for this session)
+  if (
+    (event === "paywall_shown" || event === "payment_success" || event === "paywall_dismissed")
+    && sessionId
+  ) {
+    try {
+      const { data: assignment } = await supabase
+        .from("variant_assignments")
+        .select("price_candidate_id, price_shown_cents, pricing_segment_hash, segment_hash")
+        .eq("session_id", sessionId)
+        .maybeSingle()
+
+      if (assignment?.price_candidate_id && assignment.price_shown_cents) {
+        // Resolve the plan for this candidate to get anchor price + account
+        const { data: candidate } = await supabase
+          .from("plan_price_candidates")
+          .select("plan_id")
+          .eq("id", assignment.price_candidate_id)
+          .maybeSingle()
+
+        if (candidate?.plan_id) {
+          const { data: plan } = await supabase
+            .from("plans")
+            .select("id, account_id, price_monthly, dynamic_pricing_enabled")
+            .eq("id", candidate.plan_id)
+            .maybeSingle()
+
+          if (plan?.dynamic_pricing_enabled && plan.price_monthly) {
+            const segHash = assignment.pricing_segment_hash
+              ?? assignment.segment_hash ?? "global"
+            const seg: SegmentInput = {
+              quiz_answers:  (properties as Record<string, Record<string,string>>)?.quiz_answers ?? {},
+              utm_source:    (properties as Record<string,string>)?.utm_source    ?? null,
+              device:        ((properties as Record<string,string>)?.device_type ?? (properties as Record<string,string>)?.device ?? "desktop") as "mobile" | "desktop" | "tablet",
+              returning:     Boolean((properties as Record<string,boolean>)?.is_returning ?? (properties as Record<string,boolean>)?.returning),
+              hour_bucket:   "morning", // not critical for demand model; kept for interface compat
+            }
+            const y: 0 | 1 = event === "payment_success" ? 1 : 0
+            // Fire-and-forget — non-fatal
+            await onlineUpdateDemandModel(
+              supabase,
+              plan.id,
+              plan.account_id,
+              assignment.price_shown_cents,
+              plan.price_monthly,
+              segHash,
+              seg,
+              y,
+            ).catch(e => console.warn("[sdk/events] demand model update skipped:", e instanceof Error ? e.message : e))
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[sdk/events] demand model block skipped:", e instanceof Error ? e.message : e)
     }
   }
 

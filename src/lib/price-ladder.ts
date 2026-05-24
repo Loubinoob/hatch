@@ -5,8 +5,8 @@
  * Never show an arbitrary price like $16.83 to end-users.
  */
 
-/** Monthly prices in dollars that feel natural to buyers. */
-const LADDER_USD = [5, 7, 9, 12, 15, 19, 24, 29, 34, 39, 44, 49, 59, 69, 79, 89, 99, 119, 149, 199, 249, 299]
+/** Monthly prices in dollars that feel natural to buyers. Exported for tests + analytics. */
+export const LADDER_USD = [5, 7, 9, 12, 15, 19, 24, 29, 34, 39, 44, 49, 59, 69, 79, 89, 99, 119, 149, 199, 249, 299]
 
 /**
  * Snap a price (in cents) to the nearest ladder entry.
@@ -23,45 +23,85 @@ export function snapToLadder(targetCents: number, charm = false): number {
   return Math.round(nearest * 100)
 }
 
+// ─── B.4 — Aggressiveness ─────────────────────────────────────────────────────
+
+/** Exploration amplitude per aggressiveness level. */
+export type PricingAggressiveness = "conservative" | "balanced" | "aggressive"
+
+const AGGRESSIVENESS_MULTIPLIERS: Record<PricingAggressiveness, number[]> = {
+  // conservative: ±~25% around anchor — safer, slower
+  conservative: [0.80, 1.0, 1.20],
+  // balanced: ±50%–70% — default, healthy exploration
+  balanced:     [0.70, 1.0, 1.35, 1.70],
+  // aggressive: ±90% — maximises learning speed, more price variance
+  aggressive:   [0.50, 0.65, 1.0, 1.35, 1.70, 1.90],
+}
+
 /**
- * Generate a spread of price candidates around an anchor price.
- * Returns 3–5 unique prices snapped to the ladder, within [floor, ceiling].
+ * Generate a spread of price candidates around an anchor price,
+ * modulated by the founder's aggressiveness setting.
  *
- * @param anchorCents     The founder's original price (cents)
- * @param floorCents      Minimum allowed price (default: 50% of anchor)
- * @param ceilingCents    Maximum allowed price (default: 200% of anchor)
- * @returns               Array of prices in cents, always includes the anchor
+ * @param anchorCents       Founder's original price (cents)
+ * @param aggressiveness    Conservative / balanced / aggressive
+ * @param floorCents        Minimum allowed price
+ * @param ceilingCents      Maximum allowed price
+ * @returns                 Array of prices in cents (always includes snapped anchor)
  */
 export function generatePriceCandidates(
   anchorCents: number,
   floorCents?: number,
   ceilingCents?: number,
+  aggressiveness: PricingAggressiveness = "balanced",
 ): number[] {
   const floor   = floorCents   ?? Math.round(anchorCents * 0.5)
   const ceiling = ceilingCents ?? Math.round(anchorCents * 2.0)
 
-  const anchorDollars = anchorCents / 100
-  // Spread: ~-30%, anchor, ~+35%, ~+70%
-  const rawCandidates = [
-    anchorDollars * 0.70,
-    anchorDollars,
-    anchorDollars * 1.35,
-    anchorDollars * 1.70,
-  ]
+  const multipliers = AGGRESSIVENESS_MULTIPLIERS[aggressiveness] ?? AGGRESSIVENESS_MULTIPLIERS.balanced
+  const snappedAnchor = snapToLadder(anchorCents)
 
-  const snapped = rawCandidates.map(d => snapToLadder(d * 100))
+  // Generate raw candidates at each multiplier, snap each to ladder
+  const rawSet = multipliers.map(m => snapToLadder(Math.round(anchorCents * m)))
 
-  return [...new Set(snapped)]
+  // Always include the snapped anchor
+  rawSet.push(snappedAnchor)
+
+  return [...new Set(rawSet)]
     .filter(c => c >= floor && c <= ceiling && c > 0)
     .sort((a, b) => a - b)
 }
 
-/** Format a price in cents to a display string (e.g. 2999 → "$29.99") */
+// ─── B.5 — Progressive-move helpers ──────────────────────────────────────────
+
+/**
+ * Distance in ladder steps between two prices.
+ * Returns 999 if either price is not on the ladder.
+ */
+export function ladderDistance(p1Cents: number, p2Cents: number): number {
+  const idx1 = LADDER_USD.indexOf(p1Cents / 100)
+  const idx2 = LADDER_USD.indexOf(p2Cents / 100)
+  if (idx1 < 0 || idx2 < 0) return 999
+  return Math.abs(idx1 - idx2)
+}
+
+/**
+ * Neighbouring ladder prices within ±maxSteps of the given price.
+ */
+export function ladderNeighbours(priceCents: number, maxSteps = 1): number[] {
+  const idx = LADDER_USD.indexOf(priceCents / 100)
+  if (idx < 0) return [priceCents]
+  const lo = Math.max(0, idx - maxSteps)
+  const hi = Math.min(LADDER_USD.length - 1, idx + maxSteps)
+  return LADDER_USD.slice(lo, hi + 1).map(d => d * 100)
+}
+
+// ─── Formatting & metrics ─────────────────────────────────────────────────────
+
+/** Format a price in cents to a display string (e.g. 2900 → "$29") */
 export function formatPrice(cents: number, currency = "USD"): string {
   const symbols: Record<string, string> = {
     USD: "$", EUR: "€", GBP: "£", CAD: "C$", AUD: "A$", JPY: "¥",
   }
-  const sym = symbols[currency] ?? "$"
+  const sym   = symbols[currency] ?? "$"
   const whole = Math.floor(cents / 100)
   const frac  = cents % 100
   return frac === 0 ? `${sym}${whole}` : `${sym}${whole}.${frac.toString().padStart(2, "0")}`

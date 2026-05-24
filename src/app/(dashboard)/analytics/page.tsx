@@ -16,6 +16,9 @@ import { formatMoney, formatPercent } from "@/lib/utils"
 import { subDays, format } from "date-fns"
 import Link from "next/link"
 import { formatPrice, revenuePerImpression } from "@/lib/price-ladder"
+import { evaluateDemandCurve, FEATURE_NAMES, N_FEATURES, DemandModelState } from "@/lib/demand-model"
+import type { SegmentInput } from "@/lib/segment"
+import { Area, AreaChart, ReferenceLine } from "recharts"
 
 const IS_DEV = process.env.NODE_ENV !== "production"
 
@@ -106,11 +109,44 @@ export default function AnalyticsPage() {
     candidates: { id: string; price_cents: number; is_anchor: boolean; impressions: number; conversions: number; rpi: number }[];
     maturity: { maturity_score: number; preferred_engine: string; total_impressions: number; total_conversions: number; distinct_prices_tested: number } | null;
     topVariables: { variable_name: string; importance_score: number; optimal_price_by_value: Record<string, number>; revenue_spread_cents: number }[];
-    recentRuns: { id: string; run_type: string; engine: string; data_maturity: number; reasoning: string; actions: unknown[]; created_at: string; model_used: string | null }[];
+    recentRuns: { id: string; run_type: string; engine: string; data_maturity: number; reasoning: string; actions: unknown[]; created_at: string; model_used: string | null; optimal_by_segment?: Record<string, number> }[];
+    demandModel: DemandModelState | null;
+    livePrice: number | null;   // current price being served (realtime)
   }[]>([])
+
+  // ── Live price ticker (Supabase Realtime) ────────────────────────────────
+  // Updated per-plan when variant_assignments has a new INSERT with price data
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({}) // planId → price_shown_cents
 
   useEffect(() => { initAccount() }, [])
   useEffect(() => { if (accountId) loadAll(accountId, dateRange) }, [accountId, dateRange])
+
+  // ── Live price ticker via Realtime ────────────────────────────────────────
+  useEffect(() => {
+    if (!accountId) return
+    const channel = supabase.channel(`live-prices-${accountId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "variant_assignments",
+          filter: `account_id=eq.${accountId}`,
+        },
+        (payload) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const row = payload.new as any
+          if (row.price_shown_cents && row.paywall_id) {
+            // We don't easily know the plan_id here; store by paywall for now
+            // and cross-reference when rendering
+            setLivePrices(prev => ({ ...prev, [`paywall:${row.paywall_id}`]: row.price_shown_cents }))
+          }
+        }
+      )
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId])
 
   async function initAccount() {
     const { data: { user } } = await supabase.auth.getUser()
@@ -405,6 +441,7 @@ export default function AnalyticsPage() {
       { data: maturityRows },
       { data: varImportanceRows },
       { data: scientistRuns },
+      demandModelResult,
     ] = await Promise.all([
       supabase.from("plan_price_candidates")
         .select("id, plan_id, price_cents, is_anchor, is_active, interval")
@@ -417,9 +454,14 @@ export default function AnalyticsPage() {
         .eq("account_id", accId).in("plan_id", planIds)
         .order("importance_score", { ascending: false }),
       supabase.from("pricing_scientist_runs")
-        .select("id, plan_id, run_type, engine, data_maturity, reasoning, actions, created_at, model_used")
+        .select("id, plan_id, run_type, engine, data_maturity, reasoning, actions, created_at, model_used, optimal_by_segment")
         .eq("account_id", accId).in("plan_id", planIds)
         .order("created_at", { ascending: false }).limit(30),
+      // Demand models — global segment only for analytics (safe: table may not exist)
+      supabase.from("pricing_demand_models")
+        .select("plan_id, n_obs, anchor_cents, feature_names, m_vec, q_vec")
+        .in("plan_id", planIds)
+        .eq("segment_hash", "global"),
     ])
 
     const candidateIds = (candidates ?? []).map((c: { id: string }) => c.id)
@@ -462,7 +504,21 @@ export default function AnalyticsPage() {
         .filter((r: { plan_id: string }) => r.plan_id === plan.id)
         .slice(0, 3)
 
-      return { plan, candidates: planCandidates, maturity, topVariables, recentRuns }
+      // Build demand model state from DB row
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const dmRow = (demandModelResult?.data ?? []).find((d: any) => d.plan_id === plan.id)
+      let demandModel: DemandModelState | null = null
+      if (dmRow && Array.isArray(dmRow.m_vec) && dmRow.m_vec.length === N_FEATURES) {
+        demandModel = {
+          n_obs:         dmRow.n_obs ?? 0,
+          anchor_cents:  dmRow.anchor_cents ?? plan.price_monthly,
+          feature_names: dmRow.feature_names ?? FEATURE_NAMES,
+          m:             dmRow.m_vec,
+          q:             dmRow.q_vec,
+        }
+      }
+
+      return { plan, candidates: planCandidates, maturity, topVariables, recentRuns, demandModel, livePrice: null }
     })
     setPricingData(result)
   }
@@ -935,26 +991,76 @@ export default function AnalyticsPage() {
               </p>
             </div>
           ) : (
-            pricingData.map(({ plan, candidates, maturity, topVariables, recentRuns }) => {
+            pricingData.map(({ plan, candidates, maturity, topVariables, recentRuns, demandModel }) => {
               const maxRpi = Math.max(...candidates.map(c => c.rpi), 1)
               const winner = candidates.length > 0 ? candidates.reduce((a, b) => a.rpi >= b.rpi ? a : b, candidates[0]) : null
               const maturityPct = maturity ? Math.round(maturity.maturity_score * 100) : 0
               const engineLabel = maturity?.preferred_engine === "in_house_model" ? "Model-driven" : "Claude-driven"
               const engineColor = maturity?.preferred_engine === "in_house_model" ? "text-purple-400" : "text-indigo-400"
+
+              // ── Demand model analytics ─────────────────────────────────────
+              // Elasticity: the price_norm coefficient (m[1]) captures d(logit)/d(price_norm)
+              // Negative = price-elastic (higher price → fewer conversions)
+              const priceCoeff = demandModel ? demandModel.m[1] : null
+              const elasticityLabel = priceCoeff === null ? null
+                : priceCoeff < -2   ? { text: "Highly elastic",    color: "text-red-400" }
+                : priceCoeff < -0.5 ? { text: "Price-sensitive",   color: "text-amber-400" }
+                : priceCoeff < 0.2  ? { text: "Moderate elasticity", color: "text-blue-400" }
+                : { text: "Inelastic / prestige",   color: "text-emerald-400" }
+
+              // Build demand curve for visualization
+              const neutralSeg: SegmentInput = { quiz_answers: {}, utm_source: null, device: "desktop", returning: false, hour_bucket: "morning" }
+              const priceLadder = candidates.length > 0
+                ? candidates.map(c => c.price_cents)
+                : []
+              const demandCurvePoints = demandModel && demandModel.n_obs > 0 && priceLadder.length > 1
+                ? evaluateDemandCurve(demandModel, priceLadder, neutralSeg)
+                : null
+
+              // Live price: most recent ticker for this plan (from realtime state)
+              // We don't store paywall_id per plan easily; check all paywall live prices
+              // via the plan's candidates (any price in candidates list)
+              const latestLiveKey = Object.keys(livePrices).find(k =>
+                k.startsWith("paywall:") && Object.values(livePrices).includes(livePrices[k])
+              )
+              const latestLivePrice = latestLiveKey ? livePrices[latestLiveKey] : null
+
+              // Optimal by segment from most recent scientist run
+              const latestRunWithSegments = recentRuns.find(r => r.optimal_by_segment && Object.keys(r.optimal_by_segment ?? {}).length > 1)
+              const optimalBySegment = latestRunWithSegments?.optimal_by_segment ?? null
+
               return (
                 <div key={plan.id} className="bg-[#111114] border border-white/6 rounded-xl p-5 space-y-5">
                   {/* Plan header */}
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h3 className="text-sm font-semibold text-white">{plan.name}</h3>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="text-sm font-semibold text-white">{plan.name}</h3>
+                        {/* Live price ticker */}
+                        {latestLivePrice && (
+                          <span className="flex items-center gap-1 px-1.5 py-0.5 bg-emerald-500/10 border border-emerald-500/20 rounded text-[9px] text-emerald-400 font-mono">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                            {formatPrice(latestLivePrice)} live
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[11px] text-[#52525B] mt-0.5">
                         Anchor: {formatPrice(plan.price_monthly)} ·{" "}
                         <span className={plan.dynamic_pricing_enabled ? "text-emerald-400" : "text-[#52525B]"}>
                           {plan.dynamic_pricing_enabled ? "Dynamic pricing ON" : "Fixed price"}
                         </span>
+                        {elasticityLabel && (
+                          <>
+                            {" "}·{" "}
+                            <span className={elasticityLabel.color}>{elasticityLabel.text}</span>
+                            {demandModel && (
+                              <span className="text-[#52525B]"> ({demandModel.n_obs} obs · ε={priceCoeff?.toFixed(2)})</span>
+                            )}
+                          </>
+                        )}
                       </p>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-3 shrink-0">
                       {/* Data maturity badge */}
                       {maturity && (
                         <div className="text-right">
@@ -1021,6 +1127,99 @@ export default function AnalyticsPage() {
                         })}
                       </div>
                     </>
+                  )}
+
+                  {/* ── Demand curve (B.1) ─────────────────────────────────── */}
+                  {demandCurvePoints && demandCurvePoints.length >= 2 && (
+                    <div className="border-t border-white/6 pt-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide">
+                          Demand curve — P(convert) vs price
+                        </p>
+                        <span className="text-[9px] text-[#52525B]">
+                          Chapelle-Li model · {demandModel?.n_obs} obs · 95% CI
+                        </span>
+                      </div>
+                      <ResponsiveContainer width="100%" height={160}>
+                        <AreaChart
+                          data={demandCurvePoints.map(pt => ({
+                            price: formatPrice(pt.price_cents),
+                            price_cents: pt.price_cents,
+                            conv: Math.round(pt.conv_prob * 1000) / 10,
+                            conv_low: Math.round(pt.conv_low * 1000) / 10,
+                            conv_high: Math.round(pt.conv_high * 1000) / 10,
+                            rpi: pt.rpi_cents,
+                          }))}
+                          margin={{ top: 4, right: 8, left: -16, bottom: 0 }}
+                        >
+                          <XAxis dataKey="price" tick={{ fill: "#52525B", fontSize: 10 }} axisLine={false} tickLine={false} />
+                          <YAxis
+                            tickFormatter={v => `${v}%`}
+                            tick={{ fill: "#52525B", fontSize: 10 }}
+                            axisLine={false} tickLine={false}
+                          />
+                          <Tooltip
+                            contentStyle={{ background: "#111114", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, fontSize: 11 }}
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                          formatter={(v: any, name: any) => {
+                              const n = typeof v === "number" ? v : 0
+                              if (name === "conv") return [`${n.toFixed(1)}%`, "Conv. prob (mean)"]
+                              if (name === "conv_high") return [`${n.toFixed(1)}%`, "Conv. CI high"]
+                              if (name === "conv_low") return [`${n.toFixed(1)}%`, "Conv. CI low"]
+                              return [v, name]
+                            }}
+                          />
+                          {/* CI band */}
+                          <Area type="monotone" dataKey="conv_high" stroke="none" fill="#6366F1" fillOpacity={0.12} legendType="none" />
+                          <Area type="monotone" dataKey="conv_low" stroke="none" fill="#111114" fillOpacity={1} legendType="none" />
+                          {/* Mean line */}
+                          <Area type="monotone" dataKey="conv" stroke="#6366F1" strokeWidth={2} fill="#6366F1" fillOpacity={0.05} dot={{ fill: "#6366F1", r: 3 }} />
+                          {/* Anchor reference line */}
+                          {demandModel && (
+                            <ReferenceLine
+                              x={formatPrice(demandModel.anchor_cents)}
+                              stroke="#F59E0B"
+                              strokeDasharray="4 3"
+                              label={{ value: "anchor", fill: "#F59E0B", fontSize: 9, position: "top" }}
+                            />
+                          )}
+                        </AreaChart>
+                      </ResponsiveContainer>
+                      <p className="text-[10px] text-[#52525B] mt-1">
+                        Shaded band = 95% predictive interval. Dashed line = anchor price.
+                        RPI optimal: {winner ? formatPrice(winner.price_cents) : "—"}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* ── Optimal price by segment (B.6) ─────────────────────── */}
+                  {optimalBySegment && Object.keys(optimalBySegment).length > 1 && (
+                    <div className="border-t border-white/6 pt-4">
+                      <p className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide mb-3">
+                        Optimal price by segment
+                      </p>
+                      <div className="space-y-1.5">
+                        {Object.entries(optimalBySegment)
+                          .sort(([a], [b]) => a === "global" ? -1 : b === "global" ? 1 : 0)
+                          .slice(0, 8)
+                          .map(([seg, priceCents]) => (
+                            <div key={seg} className="flex items-center gap-3">
+                              <span className="text-[10px] text-[#71717A] w-32 truncate">
+                                {seg === "global" ? "🌐 global" : seg}
+                              </span>
+                              <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-violet-500 rounded-full"
+                                  style={{ width: `${((priceCents as number) / Math.max(...Object.values(optimalBySegment) as number[], 1)) * 100}%` }}
+                                />
+                              </div>
+                              <span className="text-[10px] font-mono text-white w-10 text-right">
+                                {formatPrice(priceCents as number)}
+                              </span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
                   )}
 
                   {/* Variable importance */}

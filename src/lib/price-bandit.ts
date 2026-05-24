@@ -15,6 +15,8 @@
  */
 
 import { betaSample, betaCI } from "./sampling"
+import { DemandModelState, sampleFromDemandModel } from "./demand-model"
+import type { SegmentInput } from "./segment"
 
 export const WARMUP_MIN = 15   // min impressions per candidate before elimination
 
@@ -113,4 +115,34 @@ export function selectPriceCandidate(
   })
   scored.sort((a, b) => b.score - a.score)
   return { candidate: scored[0].candidate, mode: "thompson" }
+}
+
+/**
+ * Demand-model price selection.
+ *
+ * Uses the Chapelle-Li logistic-regression posterior to Thompson-sample a price.
+ * Falls back to the Beta-bandit when:
+ *   - No model is loaded (cold start / table not yet migrated)
+ *   - Model has < 1 observations
+ *   - The sampled candidate is null (safety)
+ *
+ * @param model       Loaded (blended) DemandModelState — or null for fallback.
+ * @param candidates  Active price candidates.
+ * @param posteriors  Beta posteriors (needed for the fallback path).
+ * @param seg         Segment input for feature construction.
+ */
+export function selectPriceWithDemandModel(
+  model: DemandModelState | null,
+  candidates: PriceCandidate[],
+  posteriors: PricePosterior[],
+  seg: SegmentInput,
+): SelectionResult {
+  if (model && model.n_obs >= 1) {
+    const chosen = sampleFromDemandModel(model, candidates, seg)
+    if (chosen) {
+      return { candidate: chosen, mode: "thompson" }
+    }
+  }
+  // Fallback: classic Beta-bandit (warmup + elimination + Thompson)
+  return selectPriceCandidate(candidates, posteriors)
 }

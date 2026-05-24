@@ -6,7 +6,8 @@ import { computeElasticity, persistElasticity } from "@/lib/elasticity"
 import { computeVariableImportance, persistVariableImportance } from "@/lib/variable-importance"
 import { updateDataMaturity, MATURITY_THRESHOLD } from "@/lib/pricing-engine"
 import { runInhouseModel, PricingDecision } from "@/lib/inhouse-pricing-model"
-import { snapToLadder } from "@/lib/price-ladder"
+import { snapToLadder, ladderDistance } from "@/lib/price-ladder"
+import { loadDemandModel, extractVariableImportance as extractDemandVI, BORROW_THRESHOLD } from "@/lib/demand-model"
 
 /**
  * POST /api/pricing/scientist
@@ -94,7 +95,7 @@ export async function POST(request: NextRequest) {
   // Load plan (include pricing_segment_keys for activation logic)
   const { data: plan } = await service
     .from("plans")
-    .select("id, name, price_monthly, price_floor_cents, price_ceiling_cents, dynamic_pricing_enabled, account_id, pricing_segment_keys")
+    .select("id, name, price_monthly, price_floor_cents, price_ceiling_cents, dynamic_pricing_enabled, account_id, pricing_segment_keys, pricing_aggressiveness")
     .eq("id", plan_id)
     .eq("account_id", accountId)
     .single()
@@ -148,6 +149,33 @@ export async function POST(request: NextRequest) {
   // Persist variable importance
   if (variableImportance.length > 0) {
     await persistVariableImportance(service, accountId, plan_id, variableImportance)
+  }
+
+  // ── Augment variable importance with demand-model interaction coefficients ─
+  // When the demand model has enough observations, extract importance scores from
+  // price × context interaction coefficients and merge them with the Beta-bandit
+  // variable importance (giving demand model a boost of +0.1 importance bonus to
+  // signal that it uses a richer evidence source).
+  const globalDemandModel = await loadDemandModel(service, plan_id, "global").catch(() => null)
+  if (globalDemandModel && globalDemandModel.n_obs >= BORROW_THRESHOLD) {
+    const demandVI = extractDemandVI(globalDemandModel)
+    for (const dvi of demandVI) {
+      const existing = variableImportance.find(v => v.variable_name === dvi.variable_name)
+      if (existing) {
+        // Blend: take max of the two importance scores (conservative merge)
+        existing.importance_score = Math.max(existing.importance_score, dvi.importance_score)
+      } else {
+        // New variable only found by demand model — push with minimal evidence
+        variableImportance.push({
+          variable_name:          dvi.variable_name,
+          importance_score:       dvi.importance_score,
+          revenue_spread_cents:   0,
+          optimal_price_by_value: {},
+          evidence:               { source: "demand_model", n_obs: globalDemandModel.n_obs },
+        })
+      }
+    }
+    console.log(`[scientist] Demand model augmented VI: ${demandVI.map(d => `${d.variable_name}=${d.importance_score.toFixed(3)}`).join(", ")}`)
   }
 
   // ── Activate / deactivate pricing segment keys ────────────────────────────
@@ -373,6 +401,35 @@ Respond in 2-4 sentences, no JSON, no bullet points.`,
   // ── Apply candidate actions with guardrails ────────────────────────────────
   const actionsApplied: typeof decision.candidateActions = []
 
+  // B.5: Find current dominant price (highest RPI among candidates with data)
+  // Used to enforce the "max 1 ladder step per run" anti-shock rule.
+  const { data: currentCandidates } = await service
+    .from("plan_price_candidates")
+    .select("id, price_cents, is_anchor, is_active")
+    .eq("plan_id", plan_id)
+    .eq("is_active", true)
+
+  const { data: currentPosteriors } = await service
+    .from("price_point_posteriors")
+    .select("price_candidate_id, alpha, beta, impressions, conversions, revenue_cents")
+    .in("price_candidate_id", (currentCandidates ?? []).map((c: { id: string }) => c.id))
+    .eq("segment_hash", "global")
+
+  const postMap = new Map((currentPosteriors ?? []).map(
+    (p: { price_candidate_id: string; impressions: number; conversions: number; revenue_cents: number }) =>
+      [p.price_candidate_id, p]
+  ))
+
+  let dominantPriceCents = anchorPriceCents
+  let bestRpi = 0
+  for (const c of currentCandidates ?? []) {
+    const post = postMap.get(c.id)
+    if (post && post.impressions >= 5) {
+      const rpi = (post.conversions / post.impressions) * c.price_cents
+      if (rpi > bestRpi) { bestRpi = rpi; dominantPriceCents = c.price_cents }
+    }
+  }
+
   for (const action of decision.candidateActions) {
     // Guardrail: snap to ladder
     const snapped = snapToLadder(action.price_cents)
@@ -387,6 +444,16 @@ Respond in 2-4 sentences, no JSON, no bullet points.`,
     if (action.action === "prune" && snapped === anchorPriceCents) {
       console.log(`[pricing/scientist] Skipping prune of anchor price ${snapped}¢`)
       continue
+    }
+
+    // B.5: Progressive moves — never ADD a price more than 1 ladder step from dominant
+    // (prune actions are allowed at any distance — they reduce variance, not increase it)
+    if (action.action === "add") {
+      const dist = ladderDistance(snapped, dominantPriceCents)
+      if (dist > 1) {
+        console.log(`[pricing/scientist] Skipping add ${snapped}¢ — ${dist} steps from dominant ${dominantPriceCents}¢ (max 1)`)
+        continue
+      }
     }
 
     if (action.action === "add") {

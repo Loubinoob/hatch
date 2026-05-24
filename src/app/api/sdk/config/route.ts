@@ -3,8 +3,9 @@ import { createClient as createServiceClient } from "@supabase/supabase-js"
 import { computeSegmentHash, computePricingSegmentHash, bucketHour, SegmentInput } from "@/lib/segment"
 import { withDefaults } from "@/lib/paywall-resilience"
 import { generatePriceCandidates, snapToLadder } from "@/lib/price-ladder"
-import { selectPriceCandidate } from "@/lib/price-bandit"
+import { selectPriceCandidate, selectPriceWithDemandModel } from "@/lib/price-bandit"
 import { betaSample } from "@/lib/sampling"
+import { loadEffectiveDemandModel } from "@/lib/demand-model"
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -113,9 +114,18 @@ async function applyDynamicPricing(
           return segMap.get(c.id) ?? globalMap.get(c.id) ?? { price_candidate_id: c.id, alpha: 1, beta: 1, impressions: 0 }
         })
 
-        // Revenue-weighted Thompson with warmup guard + adaptive elimination
-        const { candidate: chosen, mode: selectionMode } = selectPriceCandidate(candidates, effectivePosteriors)
-        console.log(`[sdk/config] ${selectionMode} pick for plan "${plan.name}": ${chosen.price_cents}¢ (seg ${pricingSegHash.slice(0, 30)})`)
+        // Revenue-weighted Thompson with warmup guard + adaptive elimination.
+        // Prefer Chapelle-Li demand model when available; fall back to Beta-bandit.
+        const demandModel = await loadEffectiveDemandModel(
+          supabase, plan.id, pricingSegHash, plan.price_monthly ?? 0
+        ).catch(() => null)
+
+        const { candidate: chosen, mode: selectionMode } = demandModel && demandModel.n_obs >= 1
+          ? selectPriceWithDemandModel(demandModel, candidates, effectivePosteriors, segmentInput)
+          : selectPriceCandidate(candidates, effectivePosteriors)
+
+        const modelLabel = demandModel && demandModel.n_obs >= 1 ? "demand" : "beta"
+        console.log(`[sdk/config] ${modelLabel}/${selectionMode} pick for plan "${plan.name}": ${chosen.price_cents}¢ (seg ${pricingSegHash.slice(0, 30)})`)
 
         // Bootstrap posteriors for any candidate not yet seen in this pricing segment
         const missingCandidates = candidates.filter((c: { id: string }) => !segMap.has(c.id))

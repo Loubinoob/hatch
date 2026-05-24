@@ -25,6 +25,8 @@ import {
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
 
+type PricingAggressiveness = "conservative" | "balanced" | "aggressive"
+
 type Plan = {
   id: string
   name: string
@@ -41,6 +43,7 @@ type Plan = {
   stripe_price_id_yearly: string | null
   stripe_product_id: string | null
   dynamic_pricing_enabled: boolean
+  pricing_aggressiveness: PricingAggressiveness
 }
 
 type NewPlan = Omit<Plan, "id" | "sort_order">
@@ -59,7 +62,14 @@ const DEFAULT_PLAN: NewPlan = {
   stripe_price_id_yearly: null,
   stripe_product_id: null,
   dynamic_pricing_enabled: false,
+  pricing_aggressiveness: "balanced",
 }
+
+const AGGRESSIVENESS_OPTIONS: { value: PricingAggressiveness; label: string; desc: string }[] = [
+  { value: "conservative", label: "Conservative", desc: "±25% — safer, fewer variants" },
+  { value: "balanced",     label: "Balanced",     desc: "±50% — recommended default" },
+  { value: "aggressive",   label: "Aggressive",   desc: "±90% — fast learning, more variance" },
+]
 
 function SortablePlanCard({
   plan, billingPeriod, onEdit, onDelete, onTogglePopular,
@@ -239,6 +249,7 @@ export default function PlansPage() {
       stripe_price_id_yearly: plan.stripe_price_id_yearly,
       stripe_product_id: plan.stripe_product_id,
       dynamic_pricing_enabled: plan.dynamic_pricing_enabled ?? false,
+      pricing_aggressiveness: (plan.pricing_aggressiveness ?? "balanced") as PricingAggressiveness,
     })
     setShowModal(true)
   }
@@ -542,9 +553,31 @@ export default function PlansPage() {
                   </label>
                 </div>
                 {form.dynamic_pricing_enabled && (
-                  <p className="text-[11px] text-amber-400/80 bg-amber-500/8 border border-amber-500/15 rounded-lg px-3 py-2">
-                    Hatch will A/B test prices around your anchor using Thompson sampling and serve the highest-revenue price to each user.
-                  </p>
+                  <div className="space-y-3">
+                    <p className="text-[11px] text-amber-400/80 bg-amber-500/8 border border-amber-500/15 rounded-lg px-3 py-2">
+                      Hatch will A/B test prices around your anchor using Thompson sampling and serve the highest-revenue price to each user.
+                    </p>
+                    <div>
+                      <label className="text-xs text-[#A1A1AA] mb-2 block">Exploration aggressiveness</label>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {AGGRESSIVENESS_OPTIONS.map(opt => (
+                          <button
+                            key={opt.value}
+                            type="button"
+                            onClick={() => setForm(f => ({ ...f, pricing_aggressiveness: opt.value }))}
+                            className={`text-left px-2.5 py-2 rounded-lg border text-xs transition-all ${
+                              form.pricing_aggressiveness === opt.value
+                                ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
+                                : "border-white/8 bg-white/3 text-[#71717A] hover:border-white/15 hover:text-[#A1A1AA]"
+                            }`}
+                          >
+                            <div className="font-semibold mb-0.5">{opt.label}</div>
+                            <div className="text-[10px] opacity-70 leading-tight">{opt.desc}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 )}
 
                 <div className="flex gap-3 pt-2">
