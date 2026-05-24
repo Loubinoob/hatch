@@ -262,17 +262,15 @@ export default function PlansPage() {
       toast.success("Plan created")
     }
 
-    // Bootstrap price candidates if dynamic pricing is enabled
+    // Cold-start value-based pricing candidates (Claude Opus, falls back to mechanical)
     if (savedPlanId && form.dynamic_pricing_enabled && form.price_monthly > 0) {
-      try {
-        await fetch("/api/pricing/bootstrap", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ plan_id: savedPlanId }),
-        })
-      } catch {
+      fetch("/api/pricing/cold-start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan_id: savedPlanId }),
+      }).catch(() => {
         // Non-fatal — candidates are bootstrapped lazily on first impression anyway
-      }
+      })
     }
 
     setSaving(false)

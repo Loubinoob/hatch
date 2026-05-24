@@ -101,7 +101,10 @@ export default function AnalyticsPage() {
   // ── Pricing data ───────────────────────────────────────────────────────────
   const [pricingData, setPricingData] = useState<{
     plan: { id: string; name: string; price_monthly: number; dynamic_pricing_enabled: boolean };
-    candidates: { id: string; price_cents: number; is_anchor: boolean; impressions: number; conversions: number; rpi: number }[]
+    candidates: { id: string; price_cents: number; is_anchor: boolean; impressions: number; conversions: number; rpi: number }[];
+    maturity: { maturity_score: number; preferred_engine: string; total_impressions: number; total_conversions: number; distinct_prices_tested: number } | null;
+    topVariables: { variable_name: string; importance_score: number; optimal_price_by_value: Record<string, number>; revenue_spread_cents: number }[];
+    recentRuns: { id: string; run_type: string; engine: string; data_maturity: number; reasoning: string; actions: unknown[]; created_at: string; model_used: string | null }[];
   }[]>([])
 
   useEffect(() => { initAccount() }, [])
@@ -390,9 +393,29 @@ export default function AnalyticsPage() {
 
     if (!plans?.length) return
 
-    const { data: candidates } = await supabase.from("plan_price_candidates")
-      .select("id, plan_id, price_cents, is_anchor, is_active, interval")
-      .eq("account_id", accId).eq("is_active", true).eq("interval", "monthly")
+    const planIds = (plans ?? []).map((p: { id: string }) => p.id)
+
+    const [
+      { data: candidates },
+      { data: maturityRows },
+      { data: varImportanceRows },
+      { data: scientistRuns },
+    ] = await Promise.all([
+      supabase.from("plan_price_candidates")
+        .select("id, plan_id, price_cents, is_anchor, is_active, interval")
+        .eq("account_id", accId).eq("is_active", true).eq("interval", "monthly"),
+      supabase.from("pricing_data_maturity")
+        .select("plan_id, maturity_score, preferred_engine, total_impressions, total_conversions, distinct_prices_tested")
+        .in("plan_id", planIds).eq("segment_hash", "global"),
+      supabase.from("pricing_variable_importance")
+        .select("plan_id, variable_name, importance_score, optimal_price_by_value, revenue_spread_cents")
+        .eq("account_id", accId).in("plan_id", planIds)
+        .order("importance_score", { ascending: false }),
+      supabase.from("pricing_scientist_runs")
+        .select("id, plan_id, run_type, engine, data_maturity, reasoning, actions, created_at, model_used")
+        .eq("account_id", accId).in("plan_id", planIds)
+        .order("created_at", { ascending: false }).limit(30),
+    ])
 
     const candidateIds = (candidates ?? []).map((c: { id: string }) => c.id)
     let posteriorMap: Record<string, { impressions: number; conversions: number; revenue_cents: number }> = {}
@@ -425,7 +448,16 @@ export default function AnalyticsPage() {
           }
         })
         .sort((a: { price_cents: number }, b: { price_cents: number }) => a.price_cents - b.price_cents)
-      return { plan, candidates: planCandidates }
+
+      const maturity = (maturityRows ?? []).find((m: { plan_id: string }) => m.plan_id === plan.id) ?? null
+      const topVariables = (varImportanceRows ?? [])
+        .filter((v: { plan_id: string }) => v.plan_id === plan.id)
+        .slice(0, 3)
+      const recentRuns = (scientistRuns ?? [])
+        .filter((r: { plan_id: string }) => r.plan_id === plan.id)
+        .slice(0, 3)
+
+      return { plan, candidates: planCandidates, maturity, topVariables, recentRuns }
     })
     setPricingData(result)
   }
@@ -898,12 +930,16 @@ export default function AnalyticsPage() {
               </p>
             </div>
           ) : (
-            pricingData.map(({ plan, candidates }) => {
+            pricingData.map(({ plan, candidates, maturity, topVariables, recentRuns }) => {
               const maxRpi = Math.max(...candidates.map(c => c.rpi), 1)
-              const winner = candidates.reduce((a, b) => a.rpi >= b.rpi ? a : b, candidates[0])
+              const winner = candidates.length > 0 ? candidates.reduce((a, b) => a.rpi >= b.rpi ? a : b, candidates[0]) : null
+              const maturityPct = maturity ? Math.round(maturity.maturity_score * 100) : 0
+              const engineLabel = maturity?.preferred_engine === "in_house_model" ? "Model-driven" : "Claude-driven"
+              const engineColor = maturity?.preferred_engine === "in_house_model" ? "text-purple-400" : "text-indigo-400"
               return (
-                <div key={plan.id} className="bg-[#111114] border border-white/6 rounded-xl p-5">
-                  <div className="flex items-center justify-between mb-4">
+                <div key={plan.id} className="bg-[#111114] border border-white/6 rounded-xl p-5 space-y-5">
+                  {/* Plan header */}
+                  <div className="flex items-start justify-between">
                     <div>
                       <h3 className="text-sm font-semibold text-white">{plan.name}</h3>
                       <p className="text-[11px] text-[#52525B] mt-0.5">
@@ -913,11 +949,28 @@ export default function AnalyticsPage() {
                         </span>
                       </p>
                     </div>
-                    <div className="text-right">
-                      <p className="text-[10px] text-[#52525B]">Best price so far</p>
-                      <p className="text-sm font-mono font-semibold text-emerald-400">
-                        {candidates.some(c => c.impressions > 0) ? formatPrice(winner.price_cents) : "—"}
-                      </p>
+                    <div className="flex items-center gap-3">
+                      {/* Data maturity badge */}
+                      {maturity && (
+                        <div className="text-right">
+                          <div className="flex items-center gap-2 justify-end mb-1">
+                            <span className={`text-[10px] font-medium ${engineColor}`}>{engineLabel}</span>
+                            <span className="text-[10px] text-[#52525B]">{maturityPct}% mature</span>
+                          </div>
+                          <div className="w-24 h-1 bg-white/5 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${maturity.preferred_engine === "in_house_model" ? "bg-purple-500" : "bg-indigo-500"}`}
+                              style={{ width: `${maturityPct}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                      {winner && candidates.some(c => c.impressions > 0) && (
+                        <div className="text-right">
+                          <p className="text-[10px] text-[#52525B]">Best price</p>
+                          <p className="text-sm font-mono font-semibold text-emerald-400">{formatPrice(winner.price_cents)}</p>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -925,8 +978,8 @@ export default function AnalyticsPage() {
                     <p className="text-xs text-[#52525B]">No candidates yet — will bootstrap on first impression</p>
                   ) : (
                     <>
-                      {/* Elasticity scatter */}
-                      <div className="mb-4">
+                      {/* Elasticity chart */}
+                      <div>
                         <p className="text-[10px] text-[#52525B] mb-2">Revenue per impression by price point</p>
                         <ResponsiveContainer width="100%" height={120}>
                           <LineChart data={candidates.map(c => ({ price: formatPrice(c.price_cents), rpi: c.rpi, impressions: c.impressions }))}>
@@ -934,7 +987,7 @@ export default function AnalyticsPage() {
                             <YAxis tickFormatter={v => formatMoney(v)} tick={{ fill: "#52525B", fontSize: 10 }} axisLine={false} tickLine={false} />
                             <Tooltip
                               contentStyle={{ background: "#111114", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, fontSize: 11 }}
-                              formatter={(v, name) => [name === "rpi" ? formatMoney(Number(v)) : v, name === "rpi" ? "Revenue/impression" : "Impressions"]}
+                              formatter={(v, name) => [name === "rpi" ? formatMoney(Number(v)) : v, name === "rpi" ? "Rev/impression" : "Impressions"]}
                             />
                             <Line type="monotone" dataKey="rpi" stroke="#6366F1" strokeWidth={2} dot={{ fill: "#6366F1", r: 4 }} />
                           </LineChart>
@@ -942,9 +995,9 @@ export default function AnalyticsPage() {
                       </div>
 
                       {/* Candidates table */}
-                      <div className="space-y-2">
+                      <div className="space-y-1.5">
                         {candidates.map(c => {
-                          const isWinner = c.rpi === maxRpi && c.impressions > 10
+                          const isWinner = winner && c.id === winner.id && c.impressions > 10
                           return (
                             <div key={c.id} className={`flex items-center gap-3 px-3 py-2 rounded-lg ${isWinner ? "bg-emerald-500/5 border border-emerald-500/15" : "bg-white/2"}`}>
                               <span className="font-mono text-sm text-white w-14">{formatPrice(c.price_cents)}</span>
@@ -952,7 +1005,7 @@ export default function AnalyticsPage() {
                               {isWinner && <span className="text-[9px] bg-emerald-500/15 text-emerald-400 px-1.5 py-0.5 rounded">best RPI</span>}
                               <div className="flex-1 grid grid-cols-3 gap-2 text-[11px] text-[#71717A]">
                                 <span>{c.impressions} imp.</span>
-                                <span>{c.conversions > 0 ? formatPercent((c.conversions / c.impressions) * 100) : "—"} conv</span>
+                                <span>{c.impressions > 0 && c.conversions > 0 ? formatPercent((c.conversions / c.impressions) * 100) : "—"} conv</span>
                                 <span className="text-white">{c.rpi > 0 ? `${formatMoney(c.rpi)}/imp` : "—"}</span>
                               </div>
                               <div className="w-20 h-1 bg-white/5 rounded-full overflow-hidden">
@@ -963,6 +1016,90 @@ export default function AnalyticsPage() {
                         })}
                       </div>
                     </>
+                  )}
+
+                  {/* Variable importance */}
+                  {topVariables.length > 0 && (
+                    <div className="border-t border-white/6 pt-4">
+                      <p className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide mb-3">
+                        Pricing variables — what drives WTP
+                      </p>
+                      <div className="space-y-3">
+                        {topVariables.map((v) => {
+                          const maxOptimal = Math.max(...Object.values(v.optimal_price_by_value), 1)
+                          return (
+                            <div key={v.variable_name}>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-[11px] font-medium text-white">{v.variable_name}</span>
+                                <span className="text-[10px] text-[#52525B]">
+                                  importance {Math.round(v.importance_score * 100)}% · spread {formatPrice(v.revenue_spread_cents)}/imp
+                                </span>
+                              </div>
+                              <div className="space-y-1">
+                                {Object.entries(v.optimal_price_by_value).slice(0, 4).map(([val, priceCents]) => (
+                                  <div key={val} className="flex items-center gap-2">
+                                    <span className="text-[10px] text-[#71717A] w-20 truncate">{val}</span>
+                                    <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                                      <div
+                                        className="h-full bg-violet-500 rounded-full"
+                                        style={{ width: `${(priceCents / maxOptimal) * 100}%` }}
+                                      />
+                                    </div>
+                                    <span className="text-[10px] font-mono text-white w-10 text-right">{formatPrice(priceCents)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Scientist run timeline */}
+                  {recentRuns.length > 0 && (
+                    <div className="border-t border-white/6 pt-4">
+                      <p className="text-[10px] font-semibold text-[#71717A] uppercase tracking-wide mb-3">
+                        Recent scientist runs
+                      </p>
+                      <div className="space-y-2">
+                        {recentRuns.map((run) => (
+                          <div key={run.id} className="flex gap-3 text-[11px]">
+                            <div className="flex flex-col items-center">
+                              <div className={`w-2 h-2 rounded-full mt-0.5 shrink-0 ${run.engine === "claude" ? "bg-indigo-500" : "bg-purple-500"}`} />
+                              <div className="flex-1 w-px bg-white/6 mt-1" />
+                            </div>
+                            <div className="pb-2 flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-0.5">
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${
+                                  run.engine === "claude" ? "bg-indigo-500/15 text-indigo-400" : "bg-purple-500/15 text-purple-400"
+                                }`}>{run.engine}</span>
+                                <span className="text-[#52525B]">{run.run_type}</span>
+                                <span className="text-[#52525B]">·</span>
+                                <span className="text-[#52525B]">{Math.round((run.data_maturity ?? 0) * 100)}% mature</span>
+                                <span className="text-[#52525B] ml-auto shrink-0">
+                                  {format(new Date(run.created_at), "MMM d HH:mm")}
+                                </span>
+                              </div>
+                              {run.reasoning && (
+                                <p className="text-[#71717A] line-clamp-2">{run.reasoning}</p>
+                              )}
+                              {Array.isArray(run.actions) && run.actions.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {(run.actions as { action: string; price_cents: number }[]).slice(0, 4).map((a, i) => (
+                                    <span key={i} className={`text-[9px] px-1.5 py-0.5 rounded ${
+                                      a.action === "add" ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"
+                                    }`}>
+                                      {a.action} {formatPrice(a.price_cents)}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   )}
                 </div>
               )
