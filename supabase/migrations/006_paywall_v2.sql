@@ -32,7 +32,7 @@ alter table public.paywalls
   -- Advanced
   add column if not exists custom_css text,
   add column if not exists success_redirect_url text,
-  add column if not exists hide_powered_by boolean default false;
+  add column if not exists hide_powered_by boolean default false,
 
   -- Content (V2 extras)
   add column if not exists social_proof_type text default 'text'

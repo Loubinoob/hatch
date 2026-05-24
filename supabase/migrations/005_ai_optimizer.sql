@@ -23,7 +23,7 @@ where pv.paywall_id = p.id and pv.account_id is null;
 
 -- ─── Variant assignments ──────────────────────────────────────────────────────
 create table if not exists public.variant_assignments (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   account_id uuid references public.accounts on delete cascade not null,
   paywall_id uuid references public.paywalls on delete cascade not null,
   variant_id uuid references public.paywall_variants on delete set null,
@@ -41,7 +41,7 @@ create index if not exists variant_assignments_account_exposed
 
 -- ─── Agent insights (L4 memory) ───────────────────────────────────────────────
 create table if not exists public.agent_insights (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   account_id uuid references public.accounts on delete cascade not null,
   paywall_id uuid references public.paywalls,
   insight text not null,
@@ -57,7 +57,7 @@ create index if not exists agent_insights_account
 
 -- ─── Agent runs (audit trail) ─────────────────────────────────────────────────
 create table if not exists public.agent_runs (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   account_id uuid references public.accounts on delete cascade not null,
   paywall_id uuid references public.paywalls,
   run_type text not null check (run_type in ('generation','reflection','manual_trigger')),

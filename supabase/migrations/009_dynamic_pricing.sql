@@ -1,8 +1,8 @@
--- ─── Dynamic Pricing — Revenue-weighted bandit ───────────────────────────────
+-- â”€â”€â”€ Dynamic Pricing â€” Revenue-weighted bandit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 -- Price candidates per plan (tested by the revenue bandit)
 create table if not exists public.plan_price_candidates (
-  id          uuid primary key default uuid_generate_v4(),
+  id          uuid primary key default gen_random_uuid(),
   plan_id     uuid references public.plans on delete cascade not null,
   account_id  uuid references public.accounts on delete cascade not null,
   interval    text not null check (interval in ('monthly','yearly')),
@@ -15,7 +15,7 @@ create table if not exists public.plan_price_candidates (
 );
 create index on public.plan_price_candidates (plan_id, interval, is_active);
 
--- Posteriors per (price candidate, segment) — optimise REVENUE not just conversion
+-- Posteriors per (price candidate, segment) â€” optimise REVENUE not just conversion
 create table if not exists public.price_point_posteriors (
   price_candidate_id uuid references public.plan_price_candidates on delete cascade not null,
   segment_hash       text not null,
@@ -67,3 +67,4 @@ create policy "ppp_select" on public.price_point_posteriors
 create policy "ppp_write" on public.price_point_posteriors
   for all to anon, authenticated
   using (true) with check (true);
+

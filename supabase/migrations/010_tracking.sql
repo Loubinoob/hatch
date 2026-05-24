@@ -1,9 +1,9 @@
 -- 010_tracking.sql
--- Experiment record: one row per paywall impression (session × paywall), denormalised.
+-- Experiment record: one row per paywall impression (session Ã— paywall), denormalised.
 -- Enables fast dashboard queries and is the future training table for AI optimisation.
 
 create table if not exists public.paywall_impressions (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   account_id uuid references public.accounts on delete cascade not null,
   paywall_id uuid references public.paywalls on delete cascade,
   session_id text not null,
@@ -101,3 +101,4 @@ alter table public.subscribers
 
 -- Track trial_end warning and refunds in events (no schema change needed, just docs)
 -- event_type values: trial_ending, payment_failed, subscription_canceled, refund_issued
+

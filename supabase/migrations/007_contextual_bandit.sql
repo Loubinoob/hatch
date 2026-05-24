@@ -24,7 +24,7 @@ alter table public.paywall_quizzes
 
 -- Anti-patterns memory (what the agent must avoid re-testing)
 create table if not exists public.agent_antipatterns (
-  id           uuid primary key default uuid_generate_v4(),
+  id           uuid primary key default gen_random_uuid(),
   account_id   uuid references public.accounts on delete cascade not null,
   pattern_type text not null check (pattern_type in (
     'angle', 'wording', 'price_anchor', 'design', 'cta_style', 'length', 'tone'
