@@ -2,6 +2,10 @@
  * elasticity.ts — Pure computation, no LLM.
  * Aggregates price_point_posteriors into an elasticity curve with Bayesian CI.
  * Called before every Pricing Scientist run, and persisted as price_elasticity_snapshots.
+ *
+ * RPI uses the posterior mean alpha/(alpha+beta) for Bayesian smoothing,
+ * NOT the raw conversions/impressions ratio (which is noisy at low counts).
+ * The raw conv_rate is kept separately for display.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -78,11 +82,14 @@ export async function computeElasticity(
 
   const curve: ElasticityPoint[] = candidates.map((c: { id: string; price_cents: number }) => {
     const post = postMap.get(c.id) ?? { alpha: 1, beta: 1, impressions: 0, conversions: 0 }
-    // Use posterior mean when no real data yet (Beta prior)
+    // Posterior mean = alpha/(alpha+beta) — Bayesian smoothed rate (handles low-count noise).
+    // Used for RPI to avoid the cold-start bias where 1 conversion / 1 impression = 100% rate.
+    const posteriorMean = post.alpha / (post.alpha + post.beta)
+    const rpiCents = posteriorMean * c.price_cents
+    // Raw conv_rate kept for display only (shown as-is in the elasticity chart)
     const convRate = post.impressions > 0
       ? post.conversions / post.impressions
-      : post.alpha / (post.alpha + post.beta)
-    const rpiCents = convRate * c.price_cents
+      : posteriorMean  // fallback to posterior when no real observations
     const [ciLow, ciHigh] = betaCI(post.alpha, post.beta)
     return {
       price_cents: c.price_cents,

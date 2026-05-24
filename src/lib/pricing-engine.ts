@@ -11,7 +11,10 @@
 type Supa = any
 
 export type { PricingDecision } from "./inhouse-pricing-model"
-export const MATURITY_THRESHOLD = 0.6
+// Raised from 0.6 → 0.75: keep Claude longer so we never regress in intelligence
+// when switching to the in-house model. At 0.75 the dataset is solid enough for
+// the hybrid (in-house numbers + Claude Sonnet reasoning) to be reliable.
+export const MATURITY_THRESHOLD = 0.75
 
 // ── Maturity score formula ────────────────────────────────────────────────────
 // convScore: sigmoid on conversions, centred at 100, scale 50

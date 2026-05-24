@@ -6,7 +6,7 @@ import { motion } from "framer-motion"
 import {
   Loader2, TrendingDown, CalendarDays, BarChart2, ArrowRight,
   MousePointerClick, Clock, X, Monitor, Globe,
-  DollarSign, Zap, Activity, Download, HelpCircle,
+  DollarSign, Zap, Activity, Download, HelpCircle, FlaskConical, RotateCcw,
 } from "lucide-react"
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -16,6 +16,8 @@ import { formatMoney, formatPercent } from "@/lib/utils"
 import { subDays, format } from "date-fns"
 import Link from "next/link"
 import { formatPrice, revenuePerImpression } from "@/lib/price-ladder"
+
+const IS_DEV = process.env.NODE_ENV !== "production"
 
 type Funnel = { label: string; count: number; color: string }
 
@@ -1105,7 +1107,232 @@ export default function AnalyticsPage() {
               )
             })
           )}
+
+          {/* ── Dev-only Simulator Panel ──────────────────────────────────── */}
+          {IS_DEV && <SimulatorPanel pricingData={pricingData} />}
         </motion.div>
+      )}
+    </div>
+  )
+}
+
+// ─── Simulator Panel (dev only) ───────────────────────────────────────────────
+type SimReport = {
+  served_price_distribution_over_time: { after_n: number; price_share: Record<string, number>; avg_price_cents: number }[]
+  final_optimal_by_segment: Record<string, number>
+  ground_truth_optimal_by_segment: Record<string, number>
+  convergence_gap_cents: number
+  top_variable_found: string | null
+  top_variable_expected: string
+  top_variable_match: boolean
+  total_simulated_revenue_cents: number
+  regret_vs_oracle_cents: number
+  candidates_used: { price_cents: number; is_anchor: boolean }[]
+}
+
+function SimulatorPanel({ pricingData }: {
+  pricingData: { plan: { id: string; name: string }; candidates: { price_cents: number }[] }[]
+}) {
+  const [open, setOpen] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [report, setReport] = useState<SimReport | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const [planId, setPlanId] = useState(pricingData[0]?.plan.id ?? "")
+  const [nUsers, setNUsers] = useState(2000)
+  const [midpoint, setMidpoint] = useState(3500)
+  const [discVar, setDiscVar] = useState("utm_source")
+  const [scientistEvery, setScientistEvery] = useState(500)
+
+  async function runSim() {
+    if (!planId) return
+    setRunning(true)
+    setReport(null)
+    setError(null)
+    try {
+      const res = await fetch("/api/dev/simulate-pricing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plan_id: planId,
+          n_users: nUsers,
+          scientist_every: scientistEvery,
+          ground_truth: {
+            base: 0.15,
+            midpoint_cents: midpoint,
+            steepness: 0.0008,
+            discriminating_variable: discVar,
+            willingness_by_value: { organic: 1.6, social: 0.7, direct: 1.0 },
+          },
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "Simulation failed")
+      setReport(data)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Unknown error")
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  async function resetSim() {
+    if (!planId) return
+    setResetting(true)
+    try {
+      await fetch(`/api/dev/reset-simulation?plan_id=${planId}`, { method: "DELETE" })
+      setReport(null)
+    } finally {
+      setResetting(false)
+    }
+  }
+
+  return (
+    <div className="border border-amber-500/20 bg-amber-500/5 rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-5 py-3 text-left"
+      >
+        <FlaskConical className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+        <span className="text-xs font-semibold text-amber-400">Price Bandit Simulator</span>
+        <span className="text-[10px] text-amber-500/70 ml-1">dev only</span>
+        <span className="ml-auto text-[10px] text-amber-500/50">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && (
+        <div className="px-5 pb-5 space-y-4">
+          <p className="text-[11px] text-amber-500/70">
+            Simulates synthetic users against a planted demand curve to verify bandit convergence.
+            Writes to <code className="font-mono">price_point_posteriors</code> with{" "}
+            <code className="font-mono">segment_hash LIKE &apos;sim:%&apos;</code>.
+          </p>
+
+          {/* Config */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-[#71717A] mb-1 block">Plan</label>
+              <select
+                value={planId}
+                onChange={e => setPlanId(e.target.value)}
+                className="w-full bg-[#111114] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
+              >
+                {pricingData.map(d => (
+                  <option key={d.plan.id} value={d.plan.id}>{d.plan.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-[#71717A] mb-1 block">N users</label>
+              <input
+                type="number" value={nUsers} onChange={e => setNUsers(Number(e.target.value))}
+                min={100} max={20000} step={100}
+                className="w-full bg-[#111114] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-[#71717A] mb-1 block">Midpoint (¢) — WTP peak</label>
+              <input
+                type="number" value={midpoint} onChange={e => setMidpoint(Number(e.target.value))}
+                min={500} max={20000} step={100}
+                className="w-full bg-[#111114] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-[#71717A] mb-1 block">Discriminating variable</label>
+              <input
+                type="text" value={discVar} onChange={e => setDiscVar(e.target.value)}
+                className="w-full bg-[#111114] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-[#71717A] mb-1 block">Scientist every N users</label>
+              <input
+                type="number" value={scientistEvery} onChange={e => setScientistEvery(Number(e.target.value))}
+                min={100} max={2000} step={100}
+                className="w-full bg-[#111114] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={runSim}
+              disabled={running || !planId}
+              className="flex items-center gap-1.5 px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-black text-xs font-semibold rounded-lg transition-colors"
+            >
+              {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <FlaskConical className="w-3 h-3" />}
+              {running ? "Simulating…" : "Run simulation"}
+            </button>
+            <button
+              onClick={resetSim}
+              disabled={resetting || !planId}
+              className="flex items-center gap-1.5 px-3 py-2 bg-white/5 hover:bg-white/10 disabled:opacity-50 text-[#71717A] hover:text-white text-xs rounded-lg transition-colors border border-white/10"
+            >
+              {resetting ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+              Reset sim data
+            </button>
+          </div>
+
+          {error && (
+            <p className="text-xs text-red-400 bg-red-500/10 rounded-lg px-3 py-2">{error}</p>
+          )}
+
+          {report && (
+            <div className="space-y-4">
+              {/* Summary KPIs */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-[#111114] rounded-lg p-3">
+                  <p className="text-[10px] text-[#52525B] mb-0.5">Convergence gap</p>
+                  <p className={`font-mono text-sm font-semibold ${report.convergence_gap_cents < 200 ? "text-emerald-400" : report.convergence_gap_cents < 1000 ? "text-amber-400" : "text-red-400"}`}>
+                    {formatPrice(report.convergence_gap_cents)}
+                  </p>
+                  <p className="text-[10px] text-[#52525B]">vs ground truth</p>
+                </div>
+                <div className="bg-[#111114] rounded-lg p-3">
+                  <p className="text-[10px] text-[#52525B] mb-0.5">Variable found</p>
+                  <p className={`text-sm font-semibold ${report.top_variable_match ? "text-emerald-400" : "text-red-400"}`}>
+                    {report.top_variable_found ?? "—"} {report.top_variable_match ? "✓" : "✗"}
+                  </p>
+                  <p className="text-[10px] text-[#52525B]">expected: {report.top_variable_expected}</p>
+                </div>
+                <div className="bg-[#111114] rounded-lg p-3">
+                  <p className="text-[10px] text-[#52525B] mb-0.5">Regret vs oracle</p>
+                  <p className="font-mono text-sm font-semibold text-white">
+                    {formatMoney(report.regret_vs_oracle_cents)}
+                  </p>
+                  <p className="text-[10px] text-[#52525B]">{formatMoney(report.total_simulated_revenue_cents)} earned</p>
+                </div>
+              </div>
+
+              {/* Price distribution over time */}
+              {report.served_price_distribution_over_time.length > 0 && (
+                <div className="bg-[#111114] rounded-lg p-4">
+                  <p className="text-[11px] text-white font-semibold mb-3">Price distribution over time (avg served price)</p>
+                  <ResponsiveContainer width="100%" height={120}>
+                    <LineChart data={report.served_price_distribution_over_time}>
+                      <XAxis dataKey="after_n" tick={{ fill: "#52525B", fontSize: 10 }} axisLine={false} tickLine={false} />
+                      <YAxis
+                        tickFormatter={v => `$${Math.round(v / 100)}`}
+                        tick={{ fill: "#52525B", fontSize: 10 }}
+                        axisLine={false} tickLine={false}
+                        domain={["auto", "auto"]}
+                      />
+                      <Tooltip
+                        contentStyle={{ background: "#111114", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8, fontSize: 11 }}
+                        formatter={(v) => [formatPrice(Number(v)), "Avg price served"]}
+                      />
+                      <Line type="monotone" dataKey="avg_price_cents" stroke="#F59E0B" strokeWidth={2} dot={{ fill: "#F59E0B", r: 3 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <p className="text-[10px] text-[#52525B] mt-1">
+                    Ground-truth optimal: {formatPrice(report.ground_truth_optimal_by_segment.global ?? 0)} · System found: {formatPrice(report.final_optimal_by_segment.global ?? 0)}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

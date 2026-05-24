@@ -263,7 +263,9 @@ Produce pricing recommendations. If data is sparse, reason from value and set up
       )
     }
   } else {
-    // In-house model for mature plans
+    // ── Hybrid: in-house model for quantitative output + Claude Sonnet for reasoning ──
+    // The in-house model handles argmax-RPI (numbers). Claude interprets WHY and what
+    // it means for the founder — so we never regress in intelligence at high maturity.
     decision = await runInhouseModel(
       elasticityGlobal,
       elasticityBySegment as Map<string, Parameters<typeof runInhouseModel>[1] extends Map<string, infer V> ? V : never>,
@@ -272,6 +274,43 @@ Produce pricing recommendations. If data is sparse, reason from value and set up
       ceilingCents,
     )
     console.log(`[pricing/scientist] In-house model: ${decision.candidateActions.length} actions, confidence=${decision.confidence}`)
+
+    // Claude Sonnet enriches the reasoning field (non-blocking, non-fatal)
+    try {
+      const topVarStr = decision.topVariables.slice(0, 2)
+        .map(v => `${v.variable} (importance ${Math.round(v.importance * 100)}%): ${v.rationale}`)
+        .join("; ")
+      const actionsStr = decision.candidateActions
+        .map(a => `${a.action} $${Math.round(a.price_cents / 100)} — ${a.reason}`)
+        .join("; ")
+      const reasoningMsg = await anthropic.messages.create({
+        model: "claude-sonnet-4-5",
+        max_tokens: 400,
+        messages: [{
+          role: "user",
+          content: `You are a pricing expert. In 2-4 sentences, explain what this pricing data means for the founder in plain language. Be concrete and actionable.
+
+Plan: "${plan.name}"
+Global optimal price: $${Math.round((decision.optimalBySegment["global"] ?? anchorCents) / 100)}/mo
+Confidence: ${Math.round(decision.confidence * 100)}%
+Top variables: ${topVarStr || "none yet"}
+Actions taken: ${actionsStr || "none"}
+Data maturity: ${Math.round(maturityScore * 100)}%
+
+Respond in 2-4 sentences, no JSON, no bullet points.`,
+        }],
+      })
+      const raw = reasoningMsg.content[0]
+      if (raw.type === "text" && raw.text.trim()) {
+        decision = { ...decision, reasoning: raw.text.trim() }
+        tokensIn += reasoningMsg.usage.input_tokens
+        tokensOut += reasoningMsg.usage.output_tokens
+        modelUsed = "in_house_model+claude-sonnet-4-5"
+      }
+    } catch (err) {
+      // Non-fatal — in-house reasoning still available
+      console.warn("[pricing/scientist] Sonnet reasoning call failed:", err instanceof Error ? err.message : err)
+    }
   }
 
   // ── Apply candidate actions with guardrails ────────────────────────────────

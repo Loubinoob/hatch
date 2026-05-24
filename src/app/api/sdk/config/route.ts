@@ -3,25 +3,13 @@ import { createClient as createServiceClient } from "@supabase/supabase-js"
 import { computeSegmentHash, bucketHour } from "@/lib/segment"
 import { withDefaults } from "@/lib/paywall-resilience"
 import { generatePriceCandidates, snapToLadder } from "@/lib/price-ladder"
+import { selectPriceCandidate } from "@/lib/price-bandit"
+import { betaSample } from "@/lib/sampling"
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers": "x-hatch-key",
-}
-
-// ─── Thompson Sampling helpers ────────────────────────────────────────────────
-
-function betaSample(alpha: number, beta: number): number {
-  const a = Math.max(1, alpha)
-  const b = Math.max(1, beta)
-  const mean = a / (a + b)
-  const variance = (a * b) / ((a + b) ** 2 * (a + b + 1))
-  const std = Math.sqrt(variance)
-  const u1 = Math.max(1e-10, Math.random())
-  const u2 = Math.random()
-  const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2)
-  return Math.max(0, Math.min(1, mean + z * std))
 }
 
 const SEGMENT_CONFIDENCE_THRESHOLD = 10
@@ -87,31 +75,44 @@ async function applyDynamicPricing(
           return plan  // serve fixed price this impression; bandit kicks in next time
         }
 
-        // Fetch posteriors for this segment
-        const { data: posteriors } = await supabase
-          .from("price_point_posteriors")
-          .select("price_candidate_id, alpha, beta, impressions")
-          .in("price_candidate_id", candidates.map((c: { id: string }) => c.id))
-          .eq("segment_hash", segmentHash)
+        // Fetch posteriors for this segment (+ global fallback for warmup coverage check)
+        const [{ data: segPosts }, { data: globalPosts }] = await Promise.all([
+          supabase
+            .from("price_point_posteriors")
+            .select("price_candidate_id, alpha, beta, impressions")
+            .in("price_candidate_id", candidates.map((c: { id: string }) => c.id))
+            .eq("segment_hash", segmentHash),
+          supabase
+            .from("price_point_posteriors")
+            .select("price_candidate_id, alpha, beta, impressions")
+            .in("price_candidate_id", candidates.map((c: { id: string }) => c.id))
+            .eq("segment_hash", "global"),
+        ])
 
-        const postMap = new Map(
-          (posteriors ?? []).map((p: { price_candidate_id: string; alpha: number; beta: number; impressions: number }) =>
+        // Merge: prefer segment-level if available, fall back to global for warmup decision
+        const segMap = new Map(
+          (segPosts ?? []).map((p: { price_candidate_id: string; alpha: number; beta: number; impressions: number }) =>
             [p.price_candidate_id, p]
           )
         )
-
-        // Revenue-weighted Thompson sampling
-        const scored = candidates.map((c: { id: string; price_cents: number }) => {
-          const post = postMap.get(c.id) as { alpha: number; beta: number; impressions: number } | undefined
-          const convProb = betaSample(post?.alpha ?? 1, post?.beta ?? 1)
-          const expectedRevenue = convProb * c.price_cents
-          return { candidate: c, score: expectedRevenue }
+        const globalMap = new Map(
+          (globalPosts ?? []).map((p: { price_candidate_id: string; alpha: number; beta: number; impressions: number }) =>
+            [p.price_candidate_id, p]
+          )
+        )
+        // For each candidate: use segment posterior if present, otherwise global
+        const effectivePosteriors = candidates.map((c: { id: string }) => {
+          return segMap.get(c.id) ?? globalMap.get(c.id) ?? { price_candidate_id: c.id, alpha: 1, beta: 1, impressions: 0 }
         })
 
-        const chosen = scored.sort((a: { score: number }, b: { score: number }) => b.score - a.score)[0].candidate
+        const postMap = segMap  // keep for backwards compat (missing candidate bootstrap below)
+
+        // Revenue-weighted Thompson with warmup guard
+        const { candidate: chosen, mode: selectionMode } = selectPriceCandidate(candidates, effectivePosteriors)
+        console.log(`[sdk/config] ${selectionMode === "warmup" ? "warmup" : "thompson"} pick for plan "${plan.name}": ${chosen.price_cents}¢ (segment ${segmentHash.slice(0, 20)})`)
 
         // Bootstrap posteriors for any candidate not seen in this segment yet
-        const missingCandidates = candidates.filter((c: { id: string }) => !postMap.has(c.id))
+        const missingCandidates = candidates.filter((c: { id: string }) => !segMap.has(c.id))
         if (missingCandidates.length > 0) {
           await supabase.from("price_point_posteriors").upsert(
             missingCandidates.map((c: { id: string }) => ({
@@ -128,7 +129,6 @@ async function applyDynamicPricing(
 
         // Return plan with overridden price
         const overridden = { ...plan, price_monthly: chosen.price_cents, _dynamic_price_candidate_id: chosen.id }
-        console.log(`[sdk/config] Dynamic price for plan "${plan.name}": ${chosen.price_cents}¢ (candidate ${chosen.id})`)
         return overridden
 
       } catch (err) {
