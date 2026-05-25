@@ -29,8 +29,6 @@ type Variant = {
 }
 
 // ─── Plans helper — fetches plans by IDs in a single query ───────────────────
-// We never use PostgREST embedded joins for plans because plans.account_id → accounts
-// (not paywalls), so there is no FK path PostgREST can resolve.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function fetchPlansForIds(supabase: any, planIds: string[]): Promise<any[]> {
   if (!planIds.length) return []
@@ -38,11 +36,11 @@ async function fetchPlansForIds(supabase: any, planIds: string[]): Promise<any[]
   return data ?? []
 }
 
-// ─── Revenue-weighted price bandit ───────────────────────────────────────────
+// ─── Revenue-weighted price bandit with sticky user assignment ────────────────
 // For each plan with dynamic_pricing_enabled, select a price candidate via
 // Thompson sampling maximising EXPECTED REVENUE = P(convert) × price.
-// Uses a pricing-specific segment hash (only validated discriminating variables)
-// to avoid over-fragmentation. Silently falls back to fixed price if anything fails.
+// If the user (identified by userKey) already has an assignment, return it
+// immediately without running the bandit — prices are stable per user.
 async function applyDynamicPricing(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
@@ -53,19 +51,51 @@ async function applyDynamicPricing(
   accountId: string,
   segmentHash: string,
   segmentInput: SegmentInput,
+  userKey: string | null,
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Promise<{ plans: any[]; priceAssignments: Record<string, { candidateId: string; cents: number; pricingSegHash: string }> }> {
+): Promise<{ plans: any[]; priceAssignments: Record<string, { candidateId: string; cents: number; pricingSegHash: string }>; allPlanPrices: Record<string, number> }> {
   const priceAssignments: Record<string, { candidateId: string; cents: number; pricingSegHash: string }> = {}
 
+  // ── Sticky assignment check: if user was here before, return same prices ────
+  if (userKey) {
+    const { data: stickyRow } = await supabase
+      .from("variant_assignments")
+      .select("all_plan_prices")
+      .eq("paywall_id", paywallId)
+      .eq("user_key", userKey)
+      .not("all_plan_prices", "eq", "{}")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    const stickyPrices = stickyRow?.all_plan_prices as Record<string, number> | null
+    if (stickyPrices && Object.keys(stickyPrices).length > 0) {
+      console.log(`[sdk/config] Sticky prices for user ${userKey.slice(0, 16)}: ${JSON.stringify(stickyPrices)}`)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const enrichedPlans = plans.map((plan: any) => {
+        const stickyPrice = stickyPrices[plan.id]
+        if (stickyPrice && plan.dynamic_pricing_enabled !== false && !plan.pricing_frozen) {
+          return { ...plan, price_monthly: stickyPrice }
+        }
+        return plan
+      })
+      return { plans: enrichedPlans, priceAssignments: {}, allPlanPrices: stickyPrices }
+    }
+  }
+
+  // ── No existing assignment — run bandit for each plan ────────────────────────
   const enrichedPlans = await Promise.all(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     plans.map(async (plan: any) => {
       try {
-        // Skip if dynamic pricing disabled on this plan
+        // Skip if dynamic pricing disabled or frozen on this plan
         if (plan.dynamic_pricing_enabled === false) return plan
+        if (plan.pricing_frozen === true) {
+          console.log(`[sdk/config] Plan "${plan.name}" is frozen — serving anchor price`)
+          return plan
+        }
 
         // Compute pricing-specific segment hash for this plan
-        // (only hashes variables the scientist validated as price-discriminating)
         const activeKeys: string[] = Array.isArray(plan.pricing_segment_keys)
           ? plan.pricing_segment_keys
           : []
@@ -82,7 +112,7 @@ async function applyDynamicPricing(
         // Lazy bootstrap: no candidates yet → generate them and use anchor price now
         if (!candidates?.length) {
           await bootstrapPriceCandidates(supabase, plan, accountId)
-          return plan  // serve fixed price this impression; bandit kicks in next time
+          return plan
         }
 
         // Fetch posteriors for this pricing segment (+ global fallback)
@@ -140,7 +170,7 @@ async function applyDynamicPricing(
           )
         }
 
-        // Record price assignment (includes pricingSegHash for variant_assignments update)
+        // Record price assignment
         priceAssignments[plan.id] = { candidateId: chosen.id, cents: chosen.price_cents, pricingSegHash }
 
         return { ...plan, price_monthly: chosen.price_cents, _dynamic_price_candidate_id: chosen.id }
@@ -152,7 +182,13 @@ async function applyDynamicPricing(
     })
   )
 
-  // Update variant_assignments with chosen price + pricing_segment_hash
+  // Build allPlanPrices map for sticky persistence
+  const allPlanPrices: Record<string, number> = {}
+  for (const [planId, pa] of Object.entries(priceAssignments)) {
+    allPlanPrices[planId] = pa.cents
+  }
+
+  // Update variant_assignments with chosen price + pricing_segment_hash (featured plan)
   const featuredPlanId = plans.find((p: { is_popular: boolean }) => p.is_popular)?.id ?? plans[0]?.id
   if (sessionId && featuredPlanId && priceAssignments[featuredPlanId]) {
     const pa = priceAssignments[featuredPlanId]
@@ -166,7 +202,7 @@ async function applyDynamicPricing(
       .eq("session_id", sessionId)
   }
 
-  return { plans: enrichedPlans, priceAssignments }
+  return { plans: enrichedPlans, priceAssignments, allPlanPrices }
 }
 
 async function bootstrapPriceCandidates(
@@ -182,7 +218,8 @@ async function bootstrapPriceCandidates(
 
     const floorCents  = plan.price_floor_cents  ? snapToLadder(plan.price_floor_cents)  : undefined
     const ceilCents   = plan.price_ceiling_cents ? snapToLadder(plan.price_ceiling_cents) : undefined
-    const candidates  = generatePriceCandidates(anchorCents, floorCents, ceilCents)
+    const aggressiveness = plan.pricing_aggressiveness ?? "balanced"
+    const candidates  = generatePriceCandidates(anchorCents, floorCents, ceilCents, aggressiveness)
 
     await supabase.from("plan_price_candidates").upsert(
       candidates.map(c => ({
@@ -206,6 +243,7 @@ export async function GET(request: NextRequest) {
   const apiKey = request.headers.get("x-hatch-key") ?? request.nextUrl.searchParams.get("key")
   const paywallId = request.nextUrl.searchParams.get("paywall")
   const sessionId = request.nextUrl.searchParams.get("session")
+  const userKey   = request.nextUrl.searchParams.get("uid") ?? null
 
   // Segment signals from SDK
   const quizAnswersRaw = request.nextUrl.searchParams.get("quiz_answers")
@@ -247,7 +285,6 @@ export async function GET(request: NextRequest) {
 
   // ── Single paywall by ID ────────────────────────────────────────────────────
   if (paywallId) {
-    // Fetch paywall WITHOUT embedded join — plans has no FK to paywalls
     const { data: paywall } = await supabase
       .from("paywalls")
       .select("*")
@@ -257,7 +294,6 @@ export async function GET(request: NextRequest) {
       .single()
 
     if (!paywall) {
-      // Look up the real reason: not found vs not live
       const { data: existing } = await supabase
         .from("paywalls")
         .select("id, status")
@@ -280,13 +316,12 @@ export async function GET(request: NextRequest) {
         .maybeSingle(),
     ])
 
-    // Apply dynamic pricing before variant merge
-    const { plans: pricedPlans } = await applyDynamicPricing(
-      supabase, plans, sessionId, paywallId, user.account_id, segmentHash, segmentInput
+    const { plans: pricedPlans, allPlanPrices } = await applyDynamicPricing(
+      supabase, plans, sessionId, paywallId, user.account_id, segmentHash, segmentInput, userKey
     )
     const base = withDefaults({ ...paywall, plans: pricedPlans })
     const enriched = await applyVariantContextual(
-      supabase, base, sessionId, user.account_id, segmentHash, segmentFeatures
+      supabase, base, sessionId, user.account_id, segmentHash, segmentFeatures, userKey, allPlanPrices
     )
 
     return NextResponse.json(
@@ -314,7 +349,7 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  // Batch-fetch all plans referenced by any live paywall (single query)
+  // Batch-fetch all plans referenced by any live paywall
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const allPlanIds: string[] = [...new Set((paywalls as any[]).flatMap(p => p.plan_ids ?? []))]
   const allPlans = await fetchPlansForIds(supabase, allPlanIds)
@@ -330,13 +365,13 @@ export async function GET(request: NextRequest) {
 
   // Dynamic pricing on the first (featured) paywall's plans
   const firstPaywall = paywallsWithPlans[0]
-  const { plans: pricedFirstPlans } = await applyDynamicPricing(
-    supabase, firstPaywall.plans ?? [], sessionId, firstPaywall.id, user.account_id, segmentHash, segmentInput
+  const { plans: pricedFirstPlans, allPlanPrices } = await applyDynamicPricing(
+    supabase, firstPaywall.plans ?? [], sessionId, firstPaywall.id, user.account_id, segmentHash, segmentInput, userKey
   )
   const firstWithPricing = { ...firstPaywall, plans: pricedFirstPlans }
 
   const enrichedFirst = await applyVariantContextual(
-    supabase, firstWithPricing, sessionId, user.account_id, segmentHash, segmentFeatures
+    supabase, firstWithPricing, sessionId, user.account_id, segmentHash, segmentFeatures, userKey, allPlanPrices
   )
   const result = [enrichedFirst, ...paywallsWithPlans.slice(1)]
 
@@ -346,7 +381,9 @@ export async function GET(request: NextRequest) {
   )
 }
 
-// ─── Contextual Thompson bandit ───────────────────────────────────────────────
+// ─── Contextual Thompson bandit (variant selection) ───────────────────────────
+// Sticky: if userKey already has a variant assignment for this paywall, return it
+// without running the bandit — users see the same variant on every visit.
 async function applyVariantContextual(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
@@ -356,6 +393,8 @@ async function applyVariantContextual(
   accountId: string,
   segmentHash: string,
   segmentFeatures: Record<string, unknown>,
+  userKey: string | null,
+  allPlanPrices: Record<string, number>,
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { data: variants } = await supabase
@@ -367,13 +406,49 @@ async function applyVariantContextual(
   const variantCount = variants?.length ?? 0
   console.log(`[sdk/config] Paywall ${paywall.id} is live — ${variantCount} active variant(s)`)
 
-  // No variants: serve the base paywall as-is (no A/B test running)
   if (!variantCount) {
+    // No variants — just persist sticky price assignment for this user
+    if (userKey && sessionId && Object.keys(allPlanPrices).length > 0) {
+      await supabase.from("variant_assignments").upsert(
+        {
+          account_id:     accountId,
+          paywall_id:     paywall.id,
+          variant_id:     null,
+          session_id:     sessionId,
+          segment_hash:   segmentHash,
+          user_key:       userKey,
+          all_plan_prices: allPlanPrices,
+          context:        { segment_hash: segmentHash, segment_features: segmentFeatures },
+        },
+        { onConflict: "paywall_id,session_id", ignoreDuplicates: false }
+      )
+    }
     console.log(`[sdk/config] No variants — serving base paywall for ${paywall.id}`)
     return paywall
   }
 
-  // Fetch segment-level posteriors for this (variant_id, segment_hash) pair
+  // ── Sticky variant check ────────────────────────────────────────────────────
+  if (userKey) {
+    const { data: stickyVariant } = await supabase
+      .from("variant_assignments")
+      .select("variant_id")
+      .eq("paywall_id", paywall.id)
+      .eq("user_key", userKey)
+      .not("variant_id", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (stickyVariant?.variant_id) {
+      const chosen = (variants as Variant[]).find(v => v.id === stickyVariant.variant_id)
+      if (chosen) {
+        console.log(`[sdk/config] Sticky variant ${chosen.id} (${chosen.name}) for user ${userKey.slice(0, 16)}`)
+        return mergeVariantOntoPaywall(paywall, chosen)
+      }
+    }
+  }
+
+  // ── Fetch segment-level posteriors ─────────────────────────────────────────
   const { data: segPosteriors } = await supabase
     .from("variant_segment_posteriors")
     .select("variant_id, alpha, beta, views")
@@ -414,22 +489,29 @@ async function applyVariantContextual(
     )
   }
 
-  // Record assignment
+  // Record assignment (includes user_key + all_plan_prices for sticky lookup)
   if (sessionId) {
     await supabase.from("variant_assignments").upsert(
       {
-        account_id: accountId,
-        paywall_id: paywall.id,
-        variant_id: chosen.id,
-        session_id: sessionId,
-        segment_hash: segmentHash,
-        context: { segment_hash: segmentHash, segment_features: segmentFeatures },
+        account_id:      accountId,
+        paywall_id:      paywall.id,
+        variant_id:      chosen.id,
+        session_id:      sessionId,
+        segment_hash:    segmentHash,
+        user_key:        userKey,
+        all_plan_prices: Object.keys(allPlanPrices).length > 0 ? allPlanPrices : undefined,
+        context:         { segment_hash: segmentHash, segment_features: segmentFeatures },
       },
       { onConflict: "paywall_id,session_id", ignoreDuplicates: false }
     )
   }
 
-  // Merge variant overrides onto base paywall
+  return mergeVariantOntoPaywall(paywall, chosen)
+}
+
+// ─── Merge variant copy/design overrides onto base paywall ───────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function mergeVariantOntoPaywall(paywall: any, chosen: Variant): any {
   const merged = { ...paywall }
   if (chosen.headline)    merged.headline    = chosen.headline
   if (chosen.subheadline) merged.subheadline = chosen.subheadline
@@ -440,10 +522,8 @@ async function applyVariantContextual(
   if (chosen.design && Object.keys(chosen.design).length) {
     merged.design = { ...(merged.design ?? {}), ...chosen.design }
   }
-
   merged._variant_id   = chosen.id
   merged._variant_name = chosen.name
-
   return merged
 }
 

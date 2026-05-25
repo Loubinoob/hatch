@@ -6,7 +6,7 @@
  * Run with:  npx tsx src/lib/__tests__/price-ladder.test.ts
  */
 
-import { LADDER_USD, snapToLadder, generatePriceCandidates, ladderDistance, ladderNeighbours } from "../price-ladder"
+import { LADDER_USD, snapToLadder, generatePriceCandidates, ladderDistance, ladderNeighbours, hillClimbingActions } from "../price-ladder"
 
 const LADDER_CENTS = new Set(LADDER_USD.map(d => d * 100))
 
@@ -40,12 +40,16 @@ for (const anchor of anchors) {
     const snappedAnchor = snapToLadder(anchor)
     assert(candidates.includes(snappedAnchor), `  anchor ${snappedAnchor}¢ always included`)
 
-    // balanced + aggressive must always explore; conservative may produce only anchor
-    // for ladder positions where ±10% doesn't reach the adjacent rung (e.g. $19)
+    // All aggressiveness levels now use ±1 ladder step — always explore
     const hasBelow = candidates.some(c => c < snappedAnchor)
     const hasAbove = candidates.some(c => c > snappedAnchor)
-    if (level !== "conservative") {
-      assert(hasBelow || hasAbove, `  has exploration around anchor`)
+    assert(hasBelow || hasAbove, `  has exploration around anchor`)
+
+    // Count: conservative/balanced = 3, aggressive = up to 4
+    if (level === "aggressive") {
+      assert(candidates.length >= 3 && candidates.length <= 4, `  aggressive has 3-4 candidates`)
+    } else {
+      assert(candidates.length === 3, `  ${level} has exactly 3 candidates (±1 step)`)
     }
   }
 }
@@ -84,6 +88,22 @@ assert(neighbours29.includes(2400), "$29 has $24 as neighbour")
 assert(neighbours29.includes(2900), "$29 includes itself")
 assert(neighbours29.includes(3400), "$29 has $34 as neighbour")
 assert(neighbours29.length === 3,   "$29 has exactly 3 neighbours (±1)")
+
+// ─── 6. hillClimbingActions ───────────────────────────────────────────────────
+// $29 window: $24/$29/$34, dominant=$34 → add $39, prune $24 (not anchor)
+console.log("\n─── hillClimbingActions ───")
+const climbs1 = hillClimbingActions([2400, 2900, 3400], 3400, 2900, 1200, 50000)
+assert(climbs1.some(a => a.action === "add"   && a.price_cents === 3900), "dominant at top → add $39")
+assert(climbs1.some(a => a.action === "prune" && a.price_cents === 2400), "dominant at top → prune $24 (not anchor)")
+
+// Dominant=$24 (bottom): add $19, prune $34 (not anchor)
+const climbs2 = hillClimbingActions([2400, 2900, 3400], 2400, 2900, 1000, 50000)
+assert(climbs2.some(a => a.action === "add"   && a.price_cents === 1900), "dominant at bottom → add $19")
+assert(climbs2.some(a => a.action === "prune" && a.price_cents === 3400), "dominant at bottom → prune $34 (not anchor)")
+
+// Dominant=$29 (middle) → no shift needed
+const climbs3 = hillClimbingActions([2400, 2900, 3400], 2900, 2900, 1000, 50000)
+assert(climbs3.length === 0, "dominant in middle → no hill-climbing actions")
 
 // ─── Summary ─────────────────────────────────────────────────────────────────
 console.log(`\n${"─".repeat(55)}`)

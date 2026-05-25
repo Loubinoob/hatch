@@ -28,24 +28,34 @@ export function snapToLadder(targetCents: number, charm = false): number {
 /** Exploration amplitude per aggressiveness level. */
 export type PricingAggressiveness = "conservative" | "balanced" | "aggressive"
 
-const AGGRESSIVENESS_MULTIPLIERS: Record<PricingAggressiveness, number[]> = {
-  // conservative: ±10% around anchor — minimal variance, safest
-  conservative: [0.90, 1.0, 1.10],
-  // balanced: -15% to +30% — default, healthy exploration without shock
-  balanced:     [0.85, 1.0, 1.15, 1.30],
-  // aggressive: -30% to +45% — fast learning, more price variance
-  aggressive:   [0.70, 0.85, 1.0, 1.20, 1.45],
+/**
+ * Ladder steps per aggressiveness level: [stepsDown, stepsUp].
+ * Each rung is ~10-20% of the anchor, so the window stays psychologically coherent.
+ *
+ *  conservative  → ±1 step  → 3 candidates, e.g. $24/$29/$34
+ *  balanced      → ±1 step  → 3 candidates (default)
+ *  aggressive    → -1/+2    → up to 4 candidates, e.g. $24/$29/$34/$39
+ *
+ * Maximum window: 2 steps from anchor. No brutal price jumps.
+ */
+const AGGRESSIVENESS_STEPS: Record<PricingAggressiveness, [number, number]> = {
+  conservative: [1, 1],
+  balanced:     [1, 1],
+  aggressive:   [1, 2],
 }
 
 /**
- * Generate a spread of price candidates around an anchor price,
+ * Generate a narrow spread of price candidates by walking the price ladder,
  * modulated by the founder's aggressiveness setting.
  *
- * @param anchorCents       Founder's original price (cents)
- * @param aggressiveness    Conservative / balanced / aggressive
- * @param floorCents        Minimum allowed price
- * @param ceilingCents      Maximum allowed price
- * @returns                 Array of prices in cents (always includes snapped anchor)
+ * All returned prices are guaranteed to be on LADDER_USD.
+ * Always includes the snapped anchor as one of the candidates.
+ *
+ * @param anchorCents    Founder's original price (cents)
+ * @param floorCents     Minimum allowed price (defaults to 50% of anchor)
+ * @param ceilingCents   Maximum allowed price (defaults to 200% of anchor)
+ * @param aggressiveness conservative / balanced / aggressive
+ * @returns              Sorted array of prices in cents, all on ladder
  */
 export function generatePriceCandidates(
   anchorCents: number,
@@ -53,21 +63,92 @@ export function generatePriceCandidates(
   ceilingCents?: number,
   aggressiveness: PricingAggressiveness = "balanced",
 ): number[] {
+  const snappedAnchor = snapToLadder(anchorCents)
+  const anchorIdx     = LADDER_USD.indexOf(snappedAnchor / 100)
+
   const floor   = floorCents   ?? Math.round(anchorCents * 0.5)
   const ceiling = ceilingCents ?? Math.round(anchorCents * 2.0)
 
-  const multipliers = AGGRESSIVENESS_MULTIPLIERS[aggressiveness] ?? AGGRESSIVENESS_MULTIPLIERS.balanced
-  const snappedAnchor = snapToLadder(anchorCents)
+  // Anchor not on ladder (shouldn't happen) → return just the snapped anchor
+  if (anchorIdx < 0) return [snappedAnchor]
 
-  // Generate raw candidates at each multiplier, snap each to ladder
-  const rawSet = multipliers.map(m => snapToLadder(Math.round(anchorCents * m)))
+  const [downSteps, upSteps] = AGGRESSIVENESS_STEPS[aggressiveness] ?? AGGRESSIVENESS_STEPS.balanced
 
-  // Always include the snapped anchor
-  rawSet.push(snappedAnchor)
+  const candidates = new Set<number>([snappedAnchor])
 
-  return [...new Set(rawSet)]
-    .filter(c => c >= floor && c <= ceiling && c > 0)
-    .sort((a, b) => a - b)
+  for (let step = 1; step <= downSteps; step++) {
+    const idx = anchorIdx - step
+    if (idx >= 0) {
+      const price = LADDER_USD[idx] * 100
+      if (price >= floor && price > 0) candidates.add(price)
+    }
+  }
+
+  for (let step = 1; step <= upSteps; step++) {
+    const idx = anchorIdx + step
+    if (idx < LADDER_USD.length) {
+      const price = LADDER_USD[idx] * 100
+      if (price <= ceiling && price > 0) candidates.add(price)
+    }
+  }
+
+  return [...candidates].sort((a, b) => a - b)
+}
+
+/**
+ * Compute the hill-climbing window shift: given current candidates and the
+ * dominant price (highest RPI), return add/prune actions to slide the testing
+ * window one step toward the winner.
+ *
+ * Used by the Pricing Scientist to implement progressive exploration.
+ */
+export function hillClimbingActions(
+  candidatePrices: number[],
+  dominantPriceCents: number,
+  anchorPriceCents: number,
+  floorCents: number,
+  ceilingCents: number,
+): { action: "add" | "prune"; price_cents: number; reason: string }[] {
+  const sorted = [...candidatePrices].sort((a, b) => a - b)
+  const windowLow  = sorted[0]
+  const windowHigh = sorted[sorted.length - 1]
+  if (!windowLow || !windowHigh) return []
+
+  const dominantIdx   = LADDER_USD.indexOf(dominantPriceCents / 100)
+  const windowHighIdx = LADDER_USD.indexOf(windowHigh / 100)
+  const windowLowIdx  = LADDER_USD.indexOf(windowLow / 100)
+  if (dominantIdx < 0 || windowHighIdx < 0 || windowLowIdx < 0) return []
+
+  const actions: { action: "add" | "prune"; price_cents: number; reason: string }[] = []
+
+  if (dominantPriceCents >= windowHigh) {
+    // Dominant is at the top → explore one step higher
+    const nextIdx = windowHighIdx + 1
+    if (nextIdx < LADDER_USD.length) {
+      const next = LADDER_USD[nextIdx] * 100
+      if (next <= ceilingCents) {
+        actions.push({ action: "add", price_cents: next, reason: `Hill-climbing up: dominant $${Math.round(dominantPriceCents/100)} is at ceiling, testing $${Math.round(next/100)}` })
+        // Prune lowest if it's not the anchor and distinct from dominant
+        if (windowLow !== anchorPriceCents && windowLow !== dominantPriceCents) {
+          actions.push({ action: "prune", price_cents: windowLow, reason: `Hill-climbing up: shrinking window from $${Math.round(windowLow/100)} as winner pulls higher` })
+        }
+      }
+    }
+  } else if (dominantPriceCents <= windowLow) {
+    // Dominant is at the bottom → explore one step lower
+    if (windowLowIdx > 0) {
+      const next = LADDER_USD[windowLowIdx - 1] * 100
+      if (next >= floorCents) {
+        actions.push({ action: "add", price_cents: next, reason: `Hill-climbing down: dominant $${Math.round(dominantPriceCents/100)} is at floor, testing $${Math.round(next/100)}` })
+        // Prune highest if it's not the anchor and distinct from dominant
+        if (windowHigh !== anchorPriceCents && windowHigh !== dominantPriceCents) {
+          actions.push({ action: "prune", price_cents: windowHigh, reason: `Hill-climbing down: shrinking window from $${Math.round(windowHigh/100)} as winner pulls lower` })
+        }
+      }
+    }
+  }
+
+  return actions
 }
 
 // ─── B.5 — Progressive-move helpers ──────────────────────────────────────────

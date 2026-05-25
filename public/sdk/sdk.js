@@ -34,6 +34,7 @@
   })()
   var SESSION_KEY = 'hatch_session'
   var USER_KEY = 'hatch_user'
+  var ANON_UID_KEY = 'hatch_uid'    // persistent cross-session anonymous id
   var SHOWN_PREFIX = 'hatch_shown_'
   var VISIT_KEY = 'hatch_visits'
 
@@ -66,6 +67,7 @@
     context: null,
     landingPage: null,
     priceShownCents: null,  // set when paywall shown with dynamic pricing
+    anonUid: null,          // persistent cross-session anonymous uid (localStorage hatch_uid)
     intervalShown: null,    // 'monthly' | 'yearly'
   }
 
@@ -101,6 +103,27 @@
 
   function storeUser(userData) {
     try { localStorage.setItem(USER_KEY, JSON.stringify(userData)) } catch (e) {}
+  }
+
+  // Returns a persistent anonymous UID stored in localStorage.
+  // Generated once per browser, survives page refreshes and new sessions.
+  // If the user has identified with a real userId, that takes precedence.
+  function getAnonUid() {
+    try {
+      var stored = localStorage.getItem(ANON_UID_KEY)
+      if (stored) return stored
+      var newUid = 'anon_' + uid()
+      localStorage.setItem(ANON_UID_KEY, newUid)
+      return newUid
+    } catch (e) {
+      // localStorage blocked (private browsing in some browsers) — generate ephemeral
+      return 'anon_' + uid()
+    }
+  }
+
+  // Effective stable user key — real userId when identified, anonymous uid otherwise
+  function getEffectiveUid() {
+    return state.userId || state.anonUid || null
   }
 
   // ─── Segment signal helpers ─────────────────────────────────────────────────
@@ -1174,6 +1197,7 @@
     }
     state.apiKey = apiKey
     state.sessionId = getSession().id
+    state.anonUid = getAnonUid()   // persistent cross-session uid — never regenerated
     var storedUser = getStoredUser()
     if (storedUser) { state.userId = storedUser.id; state.userTraits = storedUser.traits || {} }
 
@@ -1230,6 +1254,8 @@
   function identify(userId, traits) {
     state.userId = userId
     state.userTraits = traits || {}
+    // Once identified, the real userId becomes the stable price key (overrides anonymous uid)
+    state.anonUid = userId
     storeUser({ id: userId, traits: traits || {} })
     track('identify', { user_id: userId })
     fetchSubscription()
@@ -1305,6 +1331,7 @@
     var url = API_BASE + '/sdk/config?key=' + state.apiKey +
       (paywallId ? '&paywall=' + paywallId : '') +
       '&session=' + state.sessionId +
+      (getEffectiveUid() ? '&uid=' + encodeURIComponent(getEffectiveUid()) : '') +
       buildSegmentQueryParams()
 
     try {
@@ -1359,6 +1386,7 @@
     var url = API_BASE + '/sdk/config?key=' + state.apiKey +
       (paywallId ? '&paywall=' + paywallId : '') +
       '&session=' + state.sessionId +
+      (getEffectiveUid() ? '&uid=' + encodeURIComponent(getEffectiveUid()) : '') +
       buildSegmentQueryParams() +
       '&quiz_answers=' + encodeURIComponent(JSON.stringify(quizAnswers))
 

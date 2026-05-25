@@ -6,7 +6,7 @@ import { computeElasticity, persistElasticity } from "@/lib/elasticity"
 import { computeVariableImportance, persistVariableImportance } from "@/lib/variable-importance"
 import { updateDataMaturity, MATURITY_THRESHOLD } from "@/lib/pricing-engine"
 import { runInhouseModel, PricingDecision } from "@/lib/inhouse-pricing-model"
-import { snapToLadder, ladderDistance } from "@/lib/price-ladder"
+import { snapToLadder, ladderDistance, hillClimbingActions } from "@/lib/price-ladder"
 import { loadDemandModel, extractVariableImportance as extractDemandVI, BORROW_THRESHOLD } from "@/lib/demand-model"
 
 /**
@@ -92,17 +92,32 @@ export async function POST(request: NextRequest) {
     accountId = profile.account_id
   }
 
-  // Load plan (include pricing_segment_keys for activation logic)
-  const { data: plan } = await service
+  // Load plan — only guaranteed-safe columns to avoid PGRST error on missing columns
+  // pricing_aggressiveness / pricing_frozen are fetched separately (silent fail)
+  const { data: plan, error: planError } = await service
     .from("plans")
-    .select("id, name, price_monthly, price_floor_cents, price_ceiling_cents, dynamic_pricing_enabled, account_id, pricing_segment_keys, pricing_aggressiveness")
+    .select("id, name, price_monthly, price_floor_cents, price_ceiling_cents, dynamic_pricing_enabled, account_id, pricing_segment_keys")
     .eq("id", plan_id)
     .eq("account_id", accountId)
     .single()
 
-  if (!plan) return NextResponse.json({ error: "Plan not found" }, { status: 404 })
+  if (!plan) {
+    const detail = planError ? ` (${planError.message})` : ""
+    return NextResponse.json({ error: `Plan not found${detail}` }, { status: 404 })
+  }
   if (!plan.dynamic_pricing_enabled) {
     return NextResponse.json({ skipped: true, reason: "dynamic_pricing_enabled is false" })
+  }
+
+  // Optional columns — silent fail if migration 016 not yet applied
+  const { data: planExt } = await service
+    .from("plans")
+    .select("pricing_aggressiveness, pricing_frozen")
+    .eq("id", plan_id)
+    .maybeSingle()
+
+  if (planExt?.pricing_frozen === true) {
+    return NextResponse.json({ skipped: true, reason: "pricing_frozen" })
   }
 
   const anchorCents = plan.price_monthly ?? 0
@@ -428,6 +443,23 @@ Respond in 2-4 sentences, no JSON, no bullet points.`,
       const rpi = (post.conversions / post.impressions) * c.price_cents
       if (rpi > bestRpi) { bestRpi = rpi; dominantPriceCents = c.price_cents }
     }
+  }
+
+  // ── Hill-climbing: slide the testing window 1 step toward the winner ─────────
+  // If the dominant price is at the edge of the window, we add the next rung and
+  // prune the opposite edge. Prepend to candidateActions so guardrails still apply.
+  const currentCandidatePrices = (currentCandidates ?? [])
+    .filter((c: { is_active: boolean }) => c.is_active)
+    .map((c: { price_cents: number }) => c.price_cents)
+  const hillActions = hillClimbingActions(
+    currentCandidatePrices, dominantPriceCents, anchorPriceCents, floorCents, ceilingCents
+  )
+  if (hillActions.length > 0) {
+    console.log(`[pricing/scientist] Hill-climbing: ${hillActions.map(a => `${a.action} $${Math.round(a.price_cents/100)}`).join(", ")}`)
+    // Prepend hill-climbing actions (high-priority), deduplicate with LLM actions
+    const existingPriceCents = new Set(decision.candidateActions.map(a => snapToLadder(a.price_cents)))
+    const newHillActions = hillActions.filter(a => !existingPriceCents.has(snapToLadder(a.price_cents)))
+    decision = { ...decision, candidateActions: [...newHillActions, ...decision.candidateActions].slice(0, 6) }
   }
 
   for (const action of decision.candidateActions) {

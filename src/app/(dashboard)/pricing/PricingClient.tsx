@@ -13,7 +13,7 @@ import {
   ResponsiveContainer, ReferenceLine,
 } from "recharts"
 import { toast } from "sonner"
-import { createClient } from "@/lib/supabase/client"
+
 import { formatPrice, revenuePerImpression } from "@/lib/price-ladder"
 import { evaluateDemandCurve, FEATURE_NAMES, N_FEATURES } from "@/lib/demand-model"
 import type { DemandModelState } from "@/lib/demand-model"
@@ -148,11 +148,11 @@ function PlanCard({
   const [saving, setSaving] = useState(false)
   const [freezing, setFreezing] = useState(false)
   const [resetting, setResetting] = useState(false)
-  const supabase = createClient()
 
   const planId       = plan.id as string
   const anchorCents  = plan.price_monthly as number
   const isEnabled    = plan.dynamic_pricing_enabled as boolean
+  const isFrozen     = (plan.pricing_frozen as boolean) ?? false
   const aggressiveness = (plan.pricing_aggressiveness as string) ?? "balanced"
   const maturityPct  = data.maturity ? Math.round(data.maturity.maturity_score * 100) : 0
   const isRunning    = runningOptimization === planId
@@ -200,49 +200,74 @@ function PlanCard({
 
   async function handleSave() {
     setSaving(true)
-    const updates: Record<string, unknown> = { pricing_aggressiveness: aggr }
-    if (floorVal) updates.price_floor_cents = Math.round(parseFloat(floorVal) * 100)
-    else updates.price_floor_cents = null
-    if (ceilVal) updates.price_ceiling_cents = Math.round(parseFloat(ceilVal) * 100)
-    else updates.price_ceiling_cents = null
-
-    const { error } = await supabase.from("plans").update(updates).eq("id", planId)
-    setSaving(false)
-    if (error) toast.error(error.message)
-    else { toast.success("Settings saved"); onUpdate() }
+    try {
+      const res = await fetch("/api/pricing/save-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          plan_id: planId,
+          pricing_aggressiveness: aggr,
+          price_floor_cents:  floorVal ? Math.round(parseFloat(floorVal) * 100) : null,
+          price_ceiling_cents: ceilVal ? Math.round(parseFloat(ceilVal) * 100) : null,
+        }),
+      })
+      const d = await res.json()
+      if (res.ok) { toast.success("Settings saved"); onUpdate() }
+      else toast.error(d.error ?? "Save failed")
+    } catch {
+      toast.error("Network error")
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function handleFreeze() {
-    if (!confirm("Freeze exploration? Only the anchor price will be served until re-enabled.")) return
+    const willFreeze = !isFrozen
+    if (willFreeze && !confirm("Freeze exploration? Only the anchor price will be served until you unfreeze.")) return
     setFreezing(true)
-    const res = await fetch("/api/pricing/freeze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ plan_id: planId }),
-    })
-    setFreezing(false)
-    const d = await res.json()
-    if (res.ok) { toast.success(`Frozen — ${d.deactivated} variants paused`); onUpdate() }
-    else toast.error("Freeze failed")
+    try {
+      const res = await fetch("/api/pricing/freeze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan_id: planId, freeze: willFreeze }),
+      })
+      const d = await res.json()
+      if (res.ok) {
+        toast.success(willFreeze
+          ? `Frozen — ${d.deactivated} candidates paused`
+          : `Unfrozen — ${d.reactivated} candidates active`)
+        onUpdate()
+      } else toast.error("Freeze toggle failed")
+    } catch {
+      toast.error("Network error")
+    } finally {
+      setFreezing(false)
+    }
   }
 
   async function handleReset() {
-    if (!confirm("Reset all pricing data? Deletes non-anchor candidates and wipes the Bayesian model.")) return
+    if (!confirm("Reset all pricing data? Deletes non-anchor candidates, wipes the Bayesian model, and regenerates fresh candidates.")) return
     setResetting(true)
-    const res = await fetch("/api/pricing/reset", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ plan_id: planId }),
-    })
-    setResetting(false)
-    if (res.ok) { toast.success("Pricing reset"); onUpdate() }
-    else toast.error("Reset failed")
+    try {
+      const res = await fetch("/api/pricing/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan_id: planId }),
+      })
+      const d = await res.json()
+      if (res.ok) { toast.success(`Pricing reset — ${d.regenerated ? "fresh candidates regenerated" : "done"}`); onUpdate() }
+      else toast.error(d.error ?? "Reset failed")
+    } catch {
+      toast.error("Network error")
+    } finally {
+      setResetting(false)
+    }
   }
 
   const AGGR_LEVELS: { value: PricingAggressiveness; label: string; desc: string; cls: string }[] = [
-    { value: "conservative", label: "Conservative", desc: "±10%",      cls: "border-cyan-500/40 bg-cyan-500/8 text-cyan-300" },
-    { value: "balanced",     label: "Balanced",     desc: "-15%/+30%", cls: "border-indigo-500/40 bg-indigo-500/8 text-indigo-300" },
-    { value: "aggressive",   label: "Aggressive",   desc: "-30%/+45%", cls: "border-amber-500/40 bg-amber-500/8 text-amber-300" },
+    { value: "conservative", label: "Conservative", desc: "±1 step (~±15%)", cls: "border-cyan-500/40 bg-cyan-500/8 text-cyan-300" },
+    { value: "balanced",     label: "Balanced",     desc: "±1 step (default)", cls: "border-indigo-500/40 bg-indigo-500/8 text-indigo-300" },
+    { value: "aggressive",   label: "Aggressive",   desc: "-1/+2 steps (~-15%/+35%)", cls: "border-amber-500/40 bg-amber-500/8 text-amber-300" },
   ]
 
   return (
@@ -633,10 +658,14 @@ function PlanCard({
                       {saving ? "Saving…" : "Save settings"}
                     </button>
                     <button onClick={handleFreeze} disabled={freezing}
-                      className="flex items-center gap-1 px-3 py-2 bg-white/5 hover:bg-amber-500/10 text-[#71717A] hover:text-amber-400 border border-white/8 hover:border-amber-500/30 text-xs font-medium rounded-lg transition-all disabled:opacity-50"
-                      title="Pause exploration">
+                      className={`flex items-center gap-1 px-3 py-2 text-xs font-medium rounded-lg border transition-all disabled:opacity-50 ${
+                        isFrozen
+                          ? "bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25"
+                          : "bg-white/5 border-white/8 text-[#71717A] hover:bg-amber-500/10 hover:text-amber-400 hover:border-amber-500/30"
+                      }`}
+                      title={isFrozen ? "Unfreeze — resume dynamic pricing" : "Freeze — lock prices, stop exploration"}>
                       <Pause className="w-3.5 h-3.5" />
-                      {freezing ? "…" : "Freeze"}
+                      {freezing ? "…" : isFrozen ? "Frozen" : "Freeze"}
                     </button>
                     <button onClick={handleReset} disabled={resetting}
                       className="flex items-center gap-1 px-3 py-2 bg-white/5 hover:bg-red-500/10 text-[#71717A] hover:text-red-400 border border-white/8 hover:border-red-500/30 text-xs font-medium rounded-lg transition-all disabled:opacity-50"

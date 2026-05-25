@@ -47,7 +47,7 @@ export default async function PricingPage() {
   // ── Stage 2: optional columns (silent fail if migration 015 not yet applied) ─
   const { data: extData } = await supabase
     .from("plans")
-    .select("id, pricing_aggressiveness, price_floor_cents, price_ceiling_cents, pricing_segment_keys")
+    .select("id, pricing_aggressiveness, price_floor_cents, price_ceiling_cents, pricing_segment_keys, pricing_frozen")
     .eq("account_id", accountId)
 
   const extMap = new Map((extData ?? []).map(e => [e.id as string, e]))
