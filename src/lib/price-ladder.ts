@@ -32,16 +32,17 @@ export type PricingAggressiveness = "conservative" | "balanced" | "aggressive"
  * Ladder steps per aggressiveness level: [stepsDown, stepsUp].
  * Each rung is ~10-20% of the anchor, so the window stays psychologically coherent.
  *
- *  conservative  → ±1 step  → 3 candidates, e.g. $24/$29/$34
- *  balanced      → ±1 step  → 3 candidates (default)
- *  aggressive    → -1/+2    → up to 4 candidates, e.g. $24/$29/$34/$39
+ *  conservative  → ±1 step  → 3 candidates. Window never expands.
+ *  balanced      → ±1 step  → 3 candidates (default). Expands via hill-climbing after maturity.
+ *  aggressive    → ±1 step  → 3 candidates to start. Hill-climbing runs after maturity.
  *
- * Maximum window: 2 steps from anchor. No brutal price jumps.
+ * Maximum initial window: ±1 step from anchor. No brutal price jumps at start.
+ * Expansion happens 1 rung at a time via hillClimbingActions() once the test matures.
  */
 const AGGRESSIVENESS_STEPS: Record<PricingAggressiveness, [number, number]> = {
   conservative: [1, 1],
   balanced:     [1, 1],
-  aggressive:   [1, 2],
+  aggressive:   [1, 1],   // Always starts ±1 step; hill-climbing expands only after maturity
 }
 
 /**

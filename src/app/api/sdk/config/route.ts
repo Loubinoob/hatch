@@ -6,6 +6,7 @@ import { generatePriceCandidates, snapToLadder } from "@/lib/price-ladder"
 import { selectPriceCandidate, selectPriceWithDemandModel } from "@/lib/price-bandit"
 import { betaSample } from "@/lib/sampling"
 import { loadEffectiveDemandModel } from "@/lib/demand-model"
+import { loadChoiceModel, findBestPriceVector, CHOICE_MODEL_MIN_OBS } from "@/lib/choice-model"
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -84,6 +85,9 @@ async function applyDynamicPricing(
   }
 
   // ── No existing assignment — run bandit for each plan ────────────────────────
+  // Cache candidates fetched per-plan so joint optimiser can reuse them
+  const planCandidatesCache = new Map<string, Array<{ id: string; price_cents: number; is_anchor: boolean }>>()
+
   const enrichedPlans = await Promise.all(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     plans.map(async (plan: any) => {
@@ -114,6 +118,9 @@ async function applyDynamicPricing(
           await bootstrapPriceCandidates(supabase, plan, accountId)
           return plan
         }
+
+        // Cache for joint optimisation post-processing
+        planCandidatesCache.set(plan.id, candidates)
 
         // Fetch posteriors for this pricing segment (+ global fallback)
         const [{ data: segPosts }, { data: globalPosts }] = await Promise.all([
@@ -186,6 +193,46 @@ async function applyDynamicPricing(
   const allPlanPrices: Record<string, number> = {}
   for (const [planId, pa] of Object.entries(priceAssignments)) {
     allPlanPrices[planId] = pa.cents
+  }
+
+  // ── Joint paywall optimisation (multinomial logit) ────────────────────────────
+  // When the choice model has ≥ CHOICE_MODEL_MIN_OBS observations for this paywall,
+  // enumerate all price combinations across plans and serve the vector that maximises
+  // total expected revenue (Σ P(choose j | menu) × p_j).
+  // This captures substitution effects — e.g. raising Pro's price can boost Basic revenue.
+  if (Object.keys(priceAssignments).length >= 2) {
+    try {
+      const choiceModel = await loadChoiceModel(supabase, paywallId)
+      if (choiceModel && choiceModel.n_obs >= CHOICE_MODEL_MIN_OBS) {
+        const candidatesPerPlan: Record<string, number[]> = {}
+        for (const planId of Object.keys(priceAssignments)) {
+          const cached = planCandidatesCache.get(planId)
+          if (cached && cached.length > 0) {
+            candidatesPerPlan[planId] = cached.map((c: { price_cents: number }) => c.price_cents)
+          }
+        }
+        const jointPrices = findBestPriceVector(choiceModel, candidatesPerPlan)
+        if (Object.keys(jointPrices).length > 0) {
+          // Override per-plan bandit prices with joint optimal prices
+          for (let i = 0; i < enrichedPlans.length; i++) {
+            const jp = jointPrices[(enrichedPlans[i] as Record<string, unknown>).id as string]
+            if (jp) {
+              enrichedPlans[i] = { ...(enrichedPlans[i] as Record<string, unknown>), price_monthly: jp }
+              allPlanPrices[(enrichedPlans[i] as Record<string, unknown>).id as string] = jp
+            }
+          }
+          const summary = Object.entries(jointPrices)
+            .map(([id, p]) => `${id.slice(0, 8)}→$${p / 100}`)
+            .join(" | ")
+          console.log(
+            `[sdk/config] Joint opt (${choiceModel.n_obs} obs) for paywall ${paywallId}: ${summary}`
+          )
+        }
+      }
+    } catch (e) {
+      // Non-fatal — fall through to per-plan prices
+      console.warn("[sdk/config] Joint optimisation failed:", e instanceof Error ? e.message : e)
+    }
   }
 
   // Update variant_assignments with chosen price + pricing_segment_hash (featured plan)

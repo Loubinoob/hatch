@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import {
   TrendingUp, Brain, Activity, Pause, RotateCcw,
   Layers, Clock, ArrowUpRight, ArrowDownRight, ChevronDown,
-  ChevronUp, Loader2, Zap, AlertCircle, Play
+  ChevronUp, Loader2, Zap, AlertCircle, Play, Network
 } from "lucide-react"
 import {
   LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip,
@@ -148,6 +148,7 @@ function PlanCard({
   const [saving, setSaving] = useState(false)
   const [freezing, setFreezing] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const [narrowing, setNarrowing] = useState(false)
 
   const planId       = plan.id as string
   const anchorCents  = plan.price_monthly as number
@@ -245,6 +246,26 @@ function PlanCard({
     }
   }
 
+  async function handleNarrowWindow() {
+    setNarrowing(true)
+    try {
+      const res = await fetch("/api/pricing/regenerate-candidates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan_id: planId }),
+      })
+      const d = await res.json()
+      if (res.ok) {
+        toast.success(`Window narrowed — ${d.results?.[0]?.deactivated ?? 0} wide candidates deactivated, ${d.results?.[0]?.added ?? 0} ±1-step candidates added`)
+        onUpdate()
+      } else toast.error(d.error ?? "Narrow window failed")
+    } catch {
+      toast.error("Network error")
+    } finally {
+      setNarrowing(false)
+    }
+  }
+
   async function handleReset() {
     if (!confirm("Reset all pricing data? Deletes non-anchor candidates, wipes the Bayesian model, and regenerates fresh candidates.")) return
     setResetting(true)
@@ -265,9 +286,9 @@ function PlanCard({
   }
 
   const AGGR_LEVELS: { value: PricingAggressiveness; label: string; desc: string; cls: string }[] = [
-    { value: "conservative", label: "Conservative", desc: "±1 step (~±15%)", cls: "border-cyan-500/40 bg-cyan-500/8 text-cyan-300" },
-    { value: "balanced",     label: "Balanced",     desc: "±1 step (default)", cls: "border-indigo-500/40 bg-indigo-500/8 text-indigo-300" },
-    { value: "aggressive",   label: "Aggressive",   desc: "-1/+2 steps (~-15%/+35%)", cls: "border-amber-500/40 bg-amber-500/8 text-amber-300" },
+    { value: "conservative", label: "Conservative", desc: "±1 step — no hill-climbing", cls: "border-cyan-500/40 bg-cyan-500/8 text-cyan-300" },
+    { value: "balanced",     label: "Balanced",     desc: "±1 step, expands at maturity", cls: "border-indigo-500/40 bg-indigo-500/8 text-indigo-300" },
+    { value: "aggressive",   label: "Aggressive",   desc: "±1 step, fast hill-climbing", cls: "border-amber-500/40 bg-amber-500/8 text-amber-300" },
   ]
 
   return (
@@ -674,6 +695,13 @@ function PlanCard({
                       {resetting ? "…" : "Reset"}
                     </button>
                   </div>
+                  <div className="pt-1 border-t border-white/6">
+                    <button onClick={handleNarrowWindow} disabled={narrowing}
+                      className="text-[10px] text-[#52525B] hover:text-cyan-400 transition-colors disabled:opacity-50 w-full text-left"
+                      title="Deactivate any candidates outside ±1 ladder step from anchor (preserves posteriors)">
+                      {narrowing ? "Narrowing…" : "⟵ Narrow to ±1-step window (keeps existing data)"}
+                    </button>
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -692,11 +720,20 @@ export default function PricingClient({
   accountId,
   planData,
   loadError,
+  paywalls,
+  choiceModelData,
 }: {
   plans: Record<string, unknown>[]
   accountId: string
   planData: Record<string, unknown>
   loadError?: string
+  paywalls?: Array<{ id: string; name: string; plan_ids: string[] }>
+  choiceModelData?: Record<string, {
+    n_obs: number
+    joint_rpi_cents: number
+    independent_rpi_cents: number
+    updated_at: string | null
+  }>
 }) {
   const router = useRouter()
   const [runningOptimization, setRunningOptimization] = useState<string | null>(null)
@@ -851,6 +888,77 @@ export default function PricingClient({
           <p className="text-[11px] text-[#71717A] mt-1">vs all-anchor baseline</p>
         </div>
       </div>
+
+      {/* ── Joint Revenue Optimisation card ─────────────────────────────────────── */}
+      {paywalls && paywalls.length > 0 && (
+        <div className="mb-6 bg-[#0F0F12] border border-white/6 rounded-2xl p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Network className="w-4 h-4 text-violet-400" />
+            <h2 className="text-sm font-semibold text-white">Joint Revenue Optimisation</h2>
+            <span className="text-[10px] text-[#52525B] ml-auto">
+              Multinomial logit — captures substitution between plans
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {paywalls.map(pw => {
+              const cm = choiceModelData?.[pw.id]
+              const hasData = cm && cm.n_obs >= 20
+              const lift = hasData && cm.independent_rpi_cents > 0
+                ? ((cm.joint_rpi_cents - cm.independent_rpi_cents) / cm.independent_rpi_cents) * 100
+                : null
+              return (
+                <div key={pw.id} className={`rounded-xl border p-3.5 ${
+                  hasData && lift !== null && lift > 0
+                    ? "bg-violet-500/5 border-violet-500/20"
+                    : "bg-white/2 border-white/6"
+                }`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-medium text-[#A1A1AA] truncate">{pw.name}</span>
+                    {hasData && (
+                      <span className="text-[9px] bg-violet-500/15 text-violet-400 px-1.5 py-0.5 rounded-full shrink-0 ml-1">
+                        {cm.n_obs} obs
+                      </span>
+                    )}
+                  </div>
+                  {!cm || cm.n_obs === 0 ? (
+                    <div className="text-[11px] text-[#52525B]">No data yet — collecting cross-plan impressions</div>
+                  ) : cm.n_obs < 20 ? (
+                    <div>
+                      <div className="text-[11px] text-[#71717A] mb-1">{cm.n_obs}/20 observations to activate</div>
+                      <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                        <div className="h-full bg-violet-500 rounded-full" style={{ width: `${(cm.n_obs / 20) * 100}%` }} />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-[#71717A]">Joint RPI</span>
+                        <span className="text-violet-400 font-mono font-semibold tabular-nums">
+                          {formatMoney(Math.round(cm.joint_rpi_cents))}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-[#71717A]">Independent RPI</span>
+                        <span className="text-[#A1A1AA] font-mono tabular-nums">
+                          {formatMoney(Math.round(cm.independent_rpi_cents))}
+                        </span>
+                      </div>
+                      {lift !== null && (
+                        <div className="flex items-center justify-between text-[11px] pt-1 border-t border-white/6">
+                          <span className="text-[#71717A]">Cross-plan lift</span>
+                          <span className={`font-semibold tabular-nums ${lift > 0 ? "text-emerald-400" : "text-red-400"}`}>
+                            {lift > 0 ? "+" : ""}{lift.toFixed(1)}%
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── Main layout ────────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-6">

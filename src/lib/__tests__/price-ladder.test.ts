@@ -45,12 +45,8 @@ for (const anchor of anchors) {
     const hasAbove = candidates.some(c => c > snappedAnchor)
     assert(hasBelow || hasAbove, `  has exploration around anchor`)
 
-    // Count: conservative/balanced = 3, aggressive = up to 4
-    if (level === "aggressive") {
-      assert(candidates.length >= 3 && candidates.length <= 4, `  aggressive has 3-4 candidates`)
-    } else {
-      assert(candidates.length === 3, `  ${level} has exactly 3 candidates (±1 step)`)
-    }
+    // All levels start with exactly 3 candidates (±1 step); hill-climbing expands after maturity
+    assert(candidates.length === 3, `  ${level} has exactly 3 candidates (±1 step)`)
   }
 }
 

@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { withPlanDefaults } from "@/lib/plan-resilience"
 import { revenuePerImpression } from "@/lib/price-ladder"
+import { computeRevenueComparison } from "@/lib/choice-model"
+import type { ChoiceModelState, PlanChoiceParams } from "@/lib/choice-model"
 import PricingClient from "./PricingClient"
 
 export const dynamic = "force-dynamic"
@@ -191,11 +193,69 @@ export default async function PricingPage() {
     }
   }
 
+  // ── Load paywalls + choice models for joint revenue optimisation ────────────
+  const { data: paywalls } = await supabase
+    .from("paywalls")
+    .select("id, name, plan_ids")
+    .eq("account_id", accountId)
+    .eq("status", "live")
+
+  const paywallIds = (paywalls ?? []).map(p => p.id as string)
+  const { data: choiceModelRows } = paywallIds.length > 0
+    ? await supabase
+        .from("pricing_choice_models")
+        .select("paywall_id, n_obs, plan_params, updated_at")
+        .in("paywall_id", paywallIds)
+    : { data: null }
+
+  // Pre-compute joint vs independent revenue comparison per paywall (server-side)
+  const choiceModelData: Record<string, { n_obs: number; joint_rpi_cents: number; independent_rpi_cents: number; updated_at: string | null }> = {}
+
+  for (const cm of choiceModelRows ?? []) {
+    const paywall = (paywalls ?? []).find(p => p.id === cm.paywall_id)
+    if (!paywall) continue
+
+    const paywallPlanIds: string[] = Array.isArray(paywall.plan_ids) ? paywall.plan_ids : []
+    const candidatesPerPlan: Record<string, number[]> = {}
+    for (const planId of paywallPlanIds) {
+      const planCands = candidates.filter(c => c.plan_id === planId).map(c => c.price_cents as number)
+      if (planCands.length > 0) candidatesPerPlan[planId] = planCands
+    }
+
+    const state: ChoiceModelState = {
+      n_obs:       cm.n_obs ?? 0,
+      plan_params: (cm.plan_params as Record<string, PlanChoiceParams>) ?? {},
+    }
+
+    const comparison = computeRevenueComparison(state, candidatesPerPlan)
+    choiceModelData[cm.paywall_id as string] = {
+      n_obs:                cm.n_obs ?? 0,
+      joint_rpi_cents:      comparison?.jointRpiCents ?? 0,
+      independent_rpi_cents: comparison?.independentRpiCents ?? 0,
+      updated_at:           cm.updated_at as string | null ?? null,
+    }
+  }
+
+  // For paywalls that have no choice model yet, include n_obs=0 placeholder
+  for (const pw of paywalls ?? []) {
+    if (!choiceModelData[pw.id as string]) {
+      choiceModelData[pw.id as string] = { n_obs: 0, joint_rpi_cents: 0, independent_rpi_cents: 0, updated_at: null }
+    }
+  }
+
+  const paywallsForClient = (paywalls ?? []).map(p => ({
+    id:       p.id as string,
+    name:     p.name as string,
+    plan_ids: (p.plan_ids as string[]) ?? [],
+  }))
+
   return (
     <PricingClient
       plans={plans}
       accountId={accountId}
       planData={planData}
+      paywalls={paywallsForClient}
+      choiceModelData={choiceModelData}
     />
   )
 }

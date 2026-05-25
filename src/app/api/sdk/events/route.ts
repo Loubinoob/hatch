@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient as createServiceClient } from "@supabase/supabase-js"
 import { onlineUpdateDemandModel } from "@/lib/demand-model"
+import { onlineUpdateChoiceModel } from "@/lib/choice-model"
 import type { SegmentInput } from "@/lib/segment"
 
 const CORS_HEADERS = {
@@ -248,6 +249,81 @@ export async function POST(request: NextRequest) {
       }
     } catch (e) {
       console.warn("[sdk/events] demand model block skipped:", e instanceof Error ? e.message : e)
+    }
+  }
+
+  // ─── Choice model: online update on purchase or explicit dismiss ──────────
+  // payment_success → observe (menu, chosen_plan)
+  // paywall_dismissed → observe (menu, no_purchase)
+  // We look up all_plan_prices from variant_assignments (set at config time).
+  if ((event === "payment_success" || event === "paywall_dismissed") && sessionId && paywallId) {
+    try {
+      const { data: assignment } = await supabase
+        .from("variant_assignments")
+        .select("all_plan_prices")
+        .eq("session_id", sessionId)
+        .maybeSingle()
+
+      const menuCents = assignment?.all_plan_prices as Record<string, number> | null
+      if (menuCents && Object.keys(menuCents).length >= 2) {
+        // For purchase: the chosen plan_id is in properties; for dismiss: null
+        const chosenPlanId: string | null =
+          event === "payment_success"
+            ? ((properties as Record<string, string>)?.plan_id ?? null)
+            : null
+
+        // Get anchor prices for all menu plans
+        const planIds = Object.keys(menuCents)
+        const { data: planRows } = await supabase
+          .from("plans")
+          .select("id, price_monthly, account_id")
+          .in("id", planIds)
+
+        const anchorMap: Record<string, number> = {}
+        let choiceAccountId: string | null = null
+        for (const row of planRows ?? []) {
+          anchorMap[row.id] = row.price_monthly ?? 0
+          choiceAccountId = choiceAccountId ?? row.account_id
+        }
+
+        if (choiceAccountId) {
+          await onlineUpdateChoiceModel(
+            supabase,
+            paywallId,
+            choiceAccountId,
+            menuCents,
+            chosenPlanId,
+            anchorMap,
+          ).catch(e => console.warn("[sdk/events] choice model update skipped:", e instanceof Error ? e.message : e))
+          console.log(`[sdk/events] choice model updated — paywall=${paywallId} event=${event} chosen=${chosenPlanId ?? "none"}`)
+        }
+      }
+    } catch (e) {
+      console.warn("[sdk/events] choice model block skipped:", e instanceof Error ? e.message : e)
+    }
+  }
+
+  // ─── paywall_shown: attach full menu to paywall_impressions row ───────────
+  // menu_shown_cents records all plan prices that were displayed, enabling
+  // cross-plan revenue analysis and choice model training.
+  if (event === "paywall_shown" && sessionId && paywallId) {
+    try {
+      const { data: assignment } = await supabase
+        .from("variant_assignments")
+        .select("all_plan_prices")
+        .eq("session_id", sessionId)
+        .maybeSingle()
+
+      const menuCents = assignment?.all_plan_prices as Record<string, number> | null
+      if (menuCents && Object.keys(menuCents).length > 0) {
+        await supabase
+          .from("paywall_impressions")
+          .update({ menu_shown_cents: menuCents })
+          .eq("paywall_id", paywallId)
+          .eq("session_id", sessionId)
+      }
+    } catch (e) {
+      console.warn("[sdk/events] menu_shown_cents update skipped:", e instanceof Error ? e.message : e)
     }
   }
 

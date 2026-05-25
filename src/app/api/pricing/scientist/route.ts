@@ -431,7 +431,7 @@ Respond in 2-4 sentences, no JSON, no bullet points.`,
     .eq("segment_hash", "global")
 
   const postMap = new Map((currentPosteriors ?? []).map(
-    (p: { price_candidate_id: string; impressions: number; conversions: number; revenue_cents: number }) =>
+    (p: { price_candidate_id: string; alpha: number; beta: number; impressions: number; conversions: number; revenue_cents: number }) =>
       [p.price_candidate_id, p]
   ))
 
@@ -445,21 +445,96 @@ Respond in 2-4 sentences, no JSON, no bullet points.`,
     }
   }
 
+  // ── Maturity check: only hill-climb when data is solid ───────────────────────
+  // Conditions: (1) dominant has ≥100 impressions AND ≥30% of plan's traffic
+  //             (2) dominant's RPI credibility interval clears the runner-up's CI
+  //             (3) plan is not conservative (conservative = stable window always)
+  const aggressiveness = planExt?.pricing_aggressiveness ?? "balanced"
+  const isConservative = aggressiveness === "conservative"
+
+  const dominantCandidate = (currentCandidates ?? []).find(
+    (c: { price_cents: number }) => c.price_cents === dominantPriceCents
+  )
+  const dominantPost  = dominantCandidate ? postMap.get(dominantCandidate.id) : null
+  const dominantImpressions = dominantPost?.impressions ?? 0
+  const totalImpressionsPlan = (currentPosteriors ?? []).reduce(
+    (sum: number, p: { impressions: number }) => sum + (p.impressions ?? 0), 0
+  )
+  const dominantTrafficShare = totalImpressionsPlan > 0
+    ? dominantImpressions / totalImpressionsPlan : 0
+
+  // Approximate 95% CI for Beta distribution via normal approximation
+  function betaCI95(alpha: number, beta: number): [number, number] {
+    const n  = alpha + beta
+    const mu = alpha / n
+    const sigma = Math.sqrt(Math.max(0, mu * (1 - mu) / (n + 1)))
+    return [mu - 1.96 * sigma, mu + 1.96 * sigma]
+  }
+  const candidateRpiCIs = (currentCandidates ?? [])
+    .map((c: { id: string; price_cents: number }) => {
+      const post = postMap.get(c.id)
+      const alpha = post?.alpha ?? 1
+      const beta  = post?.beta  ?? 1
+      const [lo, hi] = betaCI95(alpha, beta)
+      return {
+        price_cents: c.price_cents,
+        rpiLow:  lo * c.price_cents,
+        rpiHigh: hi * c.price_cents,
+      }
+    })
+    .sort((a: { rpiLow: number; rpiHigh: number }, b: { rpiLow: number; rpiHigh: number }) =>
+      (b.rpiLow + b.rpiHigh) / 2 - (a.rpiLow + a.rpiHigh) / 2
+    )
+  const winner   = candidateRpiCIs[0] as { rpiLow: number; rpiHigh: number } | undefined
+  const runnerUp = candidateRpiCIs[1] as { rpiHigh: number } | undefined
+  const isClearWinner = winner && runnerUp
+    ? winner.rpiLow > runnerUp.rpiHigh
+    : false
+
+  const isMature = dominantImpressions >= 100
+    && dominantTrafficShare >= 0.30
+    && isClearWinner
+
+  const allowHillClimbing = !isConservative && isMature
+
+  if (!allowHillClimbing) {
+    const reason = isConservative
+      ? "conservative plan — window is fixed"
+      : `not mature yet (dominant: ${dominantImpressions} impr, ${(dominantTrafficShare * 100).toFixed(0)}% traffic, clearWinner=${isClearWinner})`
+    if ((currentCandidates ?? []).length > 0) {
+      console.log(`[pricing/scientist] Hill-climbing skipped — ${reason}`)
+    }
+  } else {
+    console.log(
+      `[pricing/scientist] ✅ Mature — dominant=$${dominantPriceCents / 100} ` +
+      `(${dominantImpressions} impr, ${(dominantTrafficShare * 100).toFixed(0)}% traffic, clearWinner=true). Hill-climbing allowed.`
+    )
+  }
+
   // ── Hill-climbing: slide the testing window 1 step toward the winner ─────────
-  // If the dominant price is at the edge of the window, we add the next rung and
-  // prune the opposite edge. Prepend to candidateActions so guardrails still apply.
+  // Only runs when the test is mature (≥100 impr dominant, ≥30% traffic, clear winner)
+  // and the plan is not conservative.
   const currentCandidatePrices = (currentCandidates ?? [])
     .filter((c: { is_active: boolean }) => c.is_active)
     .map((c: { price_cents: number }) => c.price_cents)
-  const hillActions = hillClimbingActions(
-    currentCandidatePrices, dominantPriceCents, anchorPriceCents, floorCents, ceilingCents
-  )
+  const hillActions = allowHillClimbing
+    ? hillClimbingActions(currentCandidatePrices, dominantPriceCents, anchorPriceCents, floorCents, ceilingCents)
+    : []
+
   if (hillActions.length > 0) {
-    console.log(`[pricing/scientist] Hill-climbing: ${hillActions.map(a => `${a.action} $${Math.round(a.price_cents/100)}`).join(", ")}`)
+    const hillSummary = hillActions.map(a => `${a.action} $${Math.round(a.price_cents/100)}`).join(", ")
+    console.log(
+      `[pricing/scientist] Hill-climbing: ${hillSummary} ` +
+      `(dominant=$${dominantPriceCents/100}, ${dominantImpressions} impr, ${(dominantTrafficShare*100).toFixed(0)}% traffic)`
+    )
     // Prepend hill-climbing actions (high-priority), deduplicate with LLM actions
     const existingPriceCents = new Set(decision.candidateActions.map(a => snapToLadder(a.price_cents)))
     const newHillActions = hillActions.filter(a => !existingPriceCents.has(snapToLadder(a.price_cents)))
     decision = { ...decision, candidateActions: [...newHillActions, ...decision.candidateActions].slice(0, 6) }
+
+    // Enrich reasoning with maturity event
+    const maturityNote = `[Matured at $${dominantPriceCents/100} — ${dominantImpressions} impr, ${(dominantTrafficShare*100).toFixed(0)}% traffic, clear winner → shifting window: ${hillSummary}]`
+    decision = { ...decision, reasoning: decision.reasoning + `\n\n${maturityNote}` }
   }
 
   for (const action of decision.candidateActions) {
