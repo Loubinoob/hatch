@@ -256,9 +256,9 @@ function PlanCard({
       })
       const d = await res.json()
       if (res.ok) {
-        toast.success(`Window narrowed — ${d.results?.[0]?.deactivated ?? 0} wide candidates deactivated, ${d.results?.[0]?.added ?? 0} ±1-step candidates added`)
+        toast.success(`Candidates reset — ${d.results?.[0]?.deactivated ?? 0} wide candidates deactivated, ${d.results?.[0]?.added ?? 0} ±8% candidates added`)
         onUpdate()
-      } else toast.error(d.error ?? "Narrow window failed")
+      } else toast.error(d.error ?? "Reset candidates failed")
     } catch {
       toast.error("Network error")
     } finally {
@@ -698,8 +698,8 @@ function PlanCard({
                   <div className="pt-1 border-t border-white/6">
                     <button onClick={handleNarrowWindow} disabled={narrowing}
                       className="text-[10px] text-[#52525B] hover:text-cyan-400 transition-colors disabled:opacity-50 w-full text-left"
-                      title="Deactivate any candidates outside ±1 ladder step from anchor (preserves posteriors)">
-                      {narrowing ? "Narrowing…" : "⟵ Narrow to ±1-step window (keeps existing data)"}
+                      title="Reset candidates to ±8% window (keeps existing posteriors)">
+                      {narrowing ? "Resetting…" : "⟵ Reset candidates to ±8% window (keeps data)"}
                     </button>
                   </div>
                 </div>

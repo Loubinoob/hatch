@@ -1,12 +1,24 @@
 /**
- * Price ladder — psychological pricing.
+ * Price ladder — psychological pricing reference.
  *
- * All dynamic price candidates MUST be snapped to this ladder.
- * Never show an arbitrary price like $16.83 to end-users.
+ * The ladder is used for:
+ *  - snapToLadder()      → snapping an anchor price to a clean round number
+ *  - hillClimbingActions() → progressive window shifts (ladder-step based)
+ *
+ * Price CANDIDATES are now generated as ±8% from the anchor (percentage-based),
+ * which keeps the total A/B spread to ~15-18% — well within the 10-20% target.
+ * Candidates are whole-dollar amounts but are NOT required to be on the ladder.
  */
 
 /** Monthly prices in dollars that feel natural to buyers. Exported for tests + analytics. */
 export const LADDER_USD = [5, 7, 9, 12, 15, 19, 24, 29, 34, 39, 44, 49, 59, 69, 79, 89, 99, 119, 149, 199, 249, 299]
+
+/**
+ * Percentage spread applied to each side of the anchor when generating candidates.
+ * 8% each side → total spread between lowest and highest candidate ≈ 15-18%.
+ * Stays well inside the 10-20% ceiling requested.
+ */
+const CANDIDATE_SPREAD = 0.08
 
 /**
  * Snap a price (in cents) to the nearest ladder entry.
@@ -29,34 +41,22 @@ export function snapToLadder(targetCents: number, charm = false): number {
 export type PricingAggressiveness = "conservative" | "balanced" | "aggressive"
 
 /**
- * Ladder steps per aggressiveness level: [stepsDown, stepsUp].
- * Each rung is ~10-20% of the anchor, so the window stays psychologically coherent.
+ * Generate a tight spread of price candidates using ±CANDIDATE_SPREAD% from the
+ * anchor, rounded to the nearest whole dollar.
  *
- *  conservative  → ±1 step  → 3 candidates. Window never expands.
- *  balanced      → ±1 step  → 3 candidates (default). Expands via hill-climbing after maturity.
- *  aggressive    → ±1 step  → 3 candidates to start. Hill-climbing runs after maturity.
+ *  conservative  → anchor only (no A/B test — price is fixed)
+ *  balanced      → [anchor×0.92, anchor, anchor×1.08] → ~15-17% total spread
+ *  aggressive    → same window as balanced to start; hill-climbing may expand later
  *
- * Maximum initial window: ±1 step from anchor. No brutal price jumps at start.
- * Expansion happens 1 rung at a time via hillClimbingActions() once the test matures.
- */
-const AGGRESSIVENESS_STEPS: Record<PricingAggressiveness, [number, number]> = {
-  conservative: [1, 1],
-  balanced:     [1, 1],
-  aggressive:   [1, 1],   // Always starts ±1 step; hill-climbing expands only after maturity
-}
-
-/**
- * Generate a narrow spread of price candidates by walking the price ladder,
- * modulated by the founder's aggressiveness setting.
- *
- * All returned prices are guaranteed to be on LADDER_USD.
- * Always includes the snapped anchor as one of the candidates.
+ * Candidates are NOT required to be on LADDER_USD — they are whole-dollar prices
+ * derived from the anchor. The anchor itself is first snapped to the nearest ladder
+ * entry so it always looks like a clean "psychological" price.
  *
  * @param anchorCents    Founder's original price (cents)
- * @param floorCents     Minimum allowed price (defaults to 50% of anchor)
- * @param ceilingCents   Maximum allowed price (defaults to 200% of anchor)
+ * @param floorCents     Minimum allowed price (optional)
+ * @param ceilingCents   Maximum allowed price (optional)
  * @param aggressiveness conservative / balanced / aggressive
- * @returns              Sorted array of prices in cents, all on ladder
+ * @returns              Sorted array of prices in cents (whole dollars, deduplicated)
  */
 export function generatePriceCandidates(
   anchorCents: number,
@@ -64,36 +64,25 @@ export function generatePriceCandidates(
   ceilingCents?: number,
   aggressiveness: PricingAggressiveness = "balanced",
 ): number[] {
+  // Conservative: no A/B testing — always serve the anchor
+  if (aggressiveness === "conservative") return [snapToLadder(anchorCents)]
+
   const snappedAnchor = snapToLadder(anchorCents)
-  const anchorIdx     = LADDER_USD.indexOf(snappedAnchor / 100)
 
-  const floor   = floorCents   ?? Math.round(anchorCents * 0.5)
-  const ceiling = ceilingCents ?? Math.round(anchorCents * 2.0)
+  // Round to the nearest whole dollar
+  const roundDollar = (c: number) => Math.round(c / 100) * 100
 
-  // Anchor not on ladder (shouldn't happen) → return just the snapped anchor
-  if (anchorIdx < 0) return [snappedAnchor]
+  const below = roundDollar(snappedAnchor * (1 - CANDIDATE_SPREAD))
+  const above = roundDollar(snappedAnchor * (1 + CANDIDATE_SPREAD))
 
-  const [downSteps, upSteps] = AGGRESSIVENESS_STEPS[aggressiveness] ?? AGGRESSIVENESS_STEPS.balanced
+  const raw = [below, snappedAnchor, above]
+    .map(c => Math.max(c, 100))                                     // minimum $1
+    .map(c => (floorCents   ? Math.max(c, floorCents)   : c))
+    .map(c => (ceilingCents ? Math.min(c, ceilingCents) : c))
 
-  const candidates = new Set<number>([snappedAnchor])
-
-  for (let step = 1; step <= downSteps; step++) {
-    const idx = anchorIdx - step
-    if (idx >= 0) {
-      const price = LADDER_USD[idx] * 100
-      if (price >= floor && price > 0) candidates.add(price)
-    }
-  }
-
-  for (let step = 1; step <= upSteps; step++) {
-    const idx = anchorIdx + step
-    if (idx < LADDER_USD.length) {
-      const price = LADDER_USD[idx] * 100
-      if (price <= ceiling && price > 0) candidates.add(price)
-    }
-  }
-
-  return [...candidates].sort((a, b) => a - b)
+  // Deduplicate (handles edge cases where ±8% rounds to the same dollar as anchor)
+  // and sort ascending
+  return [...new Set(raw)].sort((a, b) => a - b)
 }
 
 /**

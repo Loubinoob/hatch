@@ -15,7 +15,7 @@ const nextConfig: NextConfig = {
         source: "/sdk/:path*",
         headers: [
           { key: "Access-Control-Allow-Origin", value: "*" },
-          { key: "Cache-Control", value: "public, max-age=3600" },
+          { key: "Cache-Control", value: "public, max-age=60, stale-while-revalidate=3600" },
         ],
       },
     ]

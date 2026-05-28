@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createClient as createServiceClient } from "@supabase/supabase-js"
-import { generatePriceCandidates, snapToLadder, ladderDistance } from "@/lib/price-ladder"
+import { generatePriceCandidates, snapToLadder } from "@/lib/price-ladder"
 
 /**
  * POST /api/pricing/regenerate-candidates
@@ -56,10 +56,11 @@ export async function POST(request: NextRequest) {
     if (anchorCents <= 0) continue
 
     const snappedAnchor = snapToLadder(anchorCents)
-    const floorCents   = plan.price_floor_cents  ? snapToLadder(plan.price_floor_cents)  : undefined
-    const ceilCents    = plan.price_ceiling_cents ? snapToLadder(plan.price_ceiling_cents) : undefined
+    // Pass raw floor/ceil (no ladder snap needed — candidates are now percentage-based)
+    const floorCents   = plan.price_floor_cents  ?? undefined
+    const ceilCents    = plan.price_ceiling_cents ?? undefined
 
-    // Compute strict ±1 window (always use "balanced" = [1,1])
+    // Compute ±8% window (always use "balanced")
     const validWindow = new Set(
       generatePriceCandidates(anchorCents, floorCents, ceilCents, "balanced")
     )
@@ -75,10 +76,10 @@ export async function POST(request: NextRequest) {
     const existingActive = (existing ?? []).filter(c => c.is_active)
     const existingCents  = new Map((existing ?? []).map(c => [c.price_cents as number, c]))
 
-    // 1. Deactivate candidates outside ±1 step (but never deactivate anchor)
+    // 1. Deactivate candidates outside the ±8% window (but never deactivate the anchor)
     const toDeactivate = existingActive.filter(c => {
       if (c.is_anchor || c.price_cents === snappedAnchor) return false
-      return !validWindow.has(c.price_cents) || ladderDistance(c.price_cents, snappedAnchor) > 1
+      return !validWindow.has(c.price_cents)
     })
 
     if (toDeactivate.length > 0) {
@@ -131,7 +132,7 @@ export async function POST(request: NextRequest) {
     results.push({ plan_id: plan.id, name: plan.name ?? "", deactivated: planDeactivated, added: planAdded })
     console.log(
       `[regenerate-candidates] plan="${plan.name}" anchor=$${snappedAnchor/100} ` +
-      `window=[${[...validWindow].map(p => `$${p/100}`).join("/")}] ` +
+      `±8%_window=[${[...validWindow].map(p => `$${p/100}`).join("/")}] ` +
       `deactivated=${planDeactivated} added=${planAdded}`
     )
   }

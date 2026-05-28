@@ -20,6 +20,10 @@ export const CRITICAL_FIELDS = [
 /** Safe fallback values for optional/cosmetic paywall fields.
  *  Used when a column is absent from the DB row (null or missing key). */
 export const PAYWALL_DEFAULTS: Record<string, unknown> = {
+  // Block system (migration 018)
+  blocks:       [],
+  display_mode: "modal",
+  template_id:  null,
   // Design
   animation_style:        "slide",
   button_shape:           "rounded",

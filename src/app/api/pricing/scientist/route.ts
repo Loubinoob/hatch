@@ -6,7 +6,8 @@ import { computeElasticity, persistElasticity } from "@/lib/elasticity"
 import { computeVariableImportance, persistVariableImportance } from "@/lib/variable-importance"
 import { updateDataMaturity, MATURITY_THRESHOLD } from "@/lib/pricing-engine"
 import { runInhouseModel, PricingDecision } from "@/lib/inhouse-pricing-model"
-import { snapToLadder, ladderDistance, hillClimbingActions } from "@/lib/price-ladder"
+import { snapToLadder, ladderDistance, hillClimbingActions, generatePriceCandidates } from "@/lib/price-ladder"
+import type { PricingAggressiveness } from "@/lib/price-ladder"
 import { loadDemandModel, extractVariableImportance as extractDemandVI, BORROW_THRESHOLD } from "@/lib/demand-model"
 
 /**
@@ -418,16 +419,31 @@ Respond in 2-4 sentences, no JSON, no bullet points.`,
 
   // B.5: Find current dominant price (highest RPI among candidates with data)
   // Used to enforce the "max 1 ladder step per run" anti-shock rule.
-  const { data: currentCandidates } = await service
+  const { data: rawCurrentCandidates } = await service
     .from("plan_price_candidates")
     .select("id, price_cents, is_anchor, is_active")
     .eq("plan_id", plan_id)
     .eq("is_active", true)
 
+  // Filter to valid ±8% window — prevents stale wide candidates from polluting
+  // dominant-price calculation, hill-climbing, and RPI confidence intervals.
+  const validCandidatePrices = new Set(
+    generatePriceCandidates(
+      anchorCents,
+      plan.price_floor_cents ?? undefined,
+      plan.price_ceiling_cents ?? undefined,
+      ((planExt?.pricing_aggressiveness ?? "balanced") as PricingAggressiveness),
+    )
+  )
+  const currentCandidates = (rawCurrentCandidates ?? []).filter(
+    (c: { price_cents: number; is_anchor: boolean }) =>
+      c.is_anchor || validCandidatePrices.has(c.price_cents)
+  )
+
   const { data: currentPosteriors } = await service
     .from("price_point_posteriors")
     .select("price_candidate_id, alpha, beta, impressions, conversions, revenue_cents")
-    .in("price_candidate_id", (currentCandidates ?? []).map((c: { id: string }) => c.id))
+    .in("price_candidate_id", currentCandidates.map((c: { id: string }) => c.id))
     .eq("segment_hash", "global")
 
   const postMap = new Map((currentPosteriors ?? []).map(

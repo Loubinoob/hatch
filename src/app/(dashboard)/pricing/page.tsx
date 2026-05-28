@@ -1,7 +1,9 @@
 import { createClient } from "@/lib/supabase/server"
+import { createClient as createServiceClient } from "@supabase/supabase-js"
 import { redirect } from "next/navigation"
 import { withPlanDefaults } from "@/lib/plan-resilience"
-import { revenuePerImpression } from "@/lib/price-ladder"
+import { revenuePerImpression, generatePriceCandidates } from "@/lib/price-ladder"
+import type { PricingAggressiveness } from "@/lib/price-ladder"
 import { computeRevenueComparison } from "@/lib/choice-model"
 import type { ChoiceModelState, PlanChoiceParams } from "@/lib/choice-model"
 import PricingClient from "./PricingClient"
@@ -123,6 +125,48 @@ export default async function PricingPage() {
   const maturityRows = maturityRes.data ?? []
   const demandModels = demandModelsRes.data ?? []
 
+  // ── Auto-cleanup: deactivate stale wide candidates in the DB ─────────────────
+  // Runs on every page load using the service role (bypasses RLS).
+  // Silently deactivates any candidate outside the ±8% window — no button needed.
+  // Fire-and-await so the display below always reflects the clean state.
+  if (candidates.length > 0) {
+    const service = createServiceClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    )
+    await Promise.allSettled(
+      plans.map(async plan => {
+        const anchorCents = plan.price_monthly as number
+        if (!anchorCents) return
+        const validWindow = new Set(
+          generatePriceCandidates(
+            anchorCents,
+            (plan.price_floor_cents as number) || undefined,
+            (plan.price_ceiling_cents as number) || undefined,
+            ((plan.pricing_aggressiveness as string) ?? "balanced") as PricingAggressiveness,
+          )
+        )
+        const toDeactivate = candidates.filter(
+          c => c.plan_id === plan.id
+            && c.is_active
+            && !c.is_anchor
+            && !validWindow.has(c.price_cents as number)
+        )
+        if (toDeactivate.length > 0) {
+          console.log(`[pricing/page] Auto-deactivating ${toDeactivate.length} stale candidates for plan "${plan.name as string}"`)
+          await service
+            .from("plan_price_candidates")
+            .update({ is_active: false })
+            .in("id", toDeactivate.map(c => c.id as string))
+          // Reflect the deactivation in the in-memory array so display below is immediate
+          for (const c of toDeactivate) {
+            (c as Record<string, unknown>).is_active = false
+          }
+        }
+      })
+    )
+  }
+
   // ── Aggregate posteriors across all non-sim segments ─��───────────────────────
   const posteriorAgg = new Map<string, {
     impressions: number; conversions: number; revenue_cents: number
@@ -144,8 +188,20 @@ export default async function PricingPage() {
     const planId = plan.id as string
     const anchorCents = plan.price_monthly as number
 
+    // ±8% window — only display candidates within the valid testing range.
+    // Even if the DB still has stale wide rows (race between page load and cleanup above),
+    // this filter guarantees the UI never shows them.
+    const validDisplayPrices = new Set(
+      generatePriceCandidates(
+        anchorCents,
+        (plan.price_floor_cents as number) || undefined,
+        (plan.price_ceiling_cents as number) || undefined,
+        ((plan.pricing_aggressiveness as string) ?? "balanced") as PricingAggressiveness,
+      )
+    )
+
     const planCandidates = candidates
-      .filter(c => c.plan_id === planId)
+      .filter(c => c.plan_id === planId && (c.is_anchor || validDisplayPrices.has(c.price_cents as number)))
       .map(c => {
         const post = posteriorAgg.get(c.id) ?? { impressions: 0, conversions: 0, revenue_cents: 0 }
         return {

@@ -7,12 +7,26 @@ import {
   Loader2, Eye, Smartphone, Monitor, Tablet, Save, Zap, ChevronLeft,
   Sparkles, RefreshCw, Check, BookOpen, Copy, AlertCircle, Brain,
   Archive, BarChart2, Clock, Activity, Lightbulb, Plus, Trash2, Globe, Code2,
+  GripVertical, Layers, X, Layout, Wand2, ChevronDown, ChevronUp,
 } from "lucide-react"
 import Link from "next/link"
 import { toast } from "sonner"
 import PaywallPreview from "@/components/paywall/PaywallPreview"
+import BlocksPreview from "@/components/blocks/BlocksPreview"
 import { getSdkScriptUrl } from "@/lib/sdk-url"
 import { withDefaults, savePaywallResilient } from "@/lib/paywall-resilience"
+import { BLOCK_DEFINITIONS, BLOCK_PICKER_ORDER } from "@/lib/blocks/definitions"
+import { PAYWALL_TEMPLATES } from "@/lib/blocks/templates"
+import { makeBlock } from "@/lib/blocks/utils"
+import type { Block, BlockType } from "@/lib/blocks/types"
+import {
+  DndContext, closestCenter, PointerSensor, useSensor, useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core"
+import {
+  SortableContext, verticalListSortingStrategy, useSortable, arrayMove,
+} from "@dnd-kit/sortable"
+import { CSS } from "@dnd-kit/utilities"
 
 type PaywallConfig = {
   id: string
@@ -70,6 +84,10 @@ type PaywallConfig = {
   adapt_font: boolean
   adapt_colors: boolean
   adapt_radius: boolean
+  // V4 — Block system
+  blocks: Block[]
+  display_mode: "modal" | "fullscreen"
+  template_id: string | null
 }
 
 type Plan = {
@@ -158,6 +176,51 @@ const DEFAULT_TRIGGER_CONFIG = {
   cooldown_hours: 24,
 }
 
+// ── Sortable block row in the canvas ──────────────────────────────────────────
+function SortableBlockItem({
+  block, isSelected, onSelect, onDelete,
+}: {
+  block: Block
+  isSelected: boolean
+  onSelect: (id: string) => void
+  onDelete: (id: string) => void
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: block.id })
+  const def = BLOCK_DEFINITIONS[block.type]
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
+      onClick={() => onSelect(block.id)}
+      className={`flex items-center gap-2 px-2.5 py-2 rounded-lg border cursor-pointer transition-all group ${
+        isSelected
+          ? "border-indigo-500/50 bg-indigo-500/8"
+          : "border-white/6 bg-white/2 hover:border-white/12 hover:bg-white/4"
+      }`}
+    >
+      <button
+        {...attributes}
+        {...listeners}
+        onClick={e => e.stopPropagation()}
+        className="cursor-grab text-[#3f3f46] hover:text-[#71717A] transition-colors flex-shrink-0"
+      >
+        <GripVertical className="w-3.5 h-3.5" />
+      </button>
+      <span className="text-sm flex-shrink-0">{def.icon}</span>
+      <span className={`text-[11px] font-medium flex-1 truncate ${isSelected ? "text-indigo-300" : "text-[#A1A1AA]"}`}>
+        {def.label}
+      </span>
+      <button
+        onClick={e => { e.stopPropagation(); onDelete(block.id) }}
+        className="opacity-0 group-hover:opacity-100 text-[#52525B] hover:text-red-400 transition-all flex-shrink-0"
+      >
+        <X className="w-3 h-3" />
+      </button>
+    </div>
+  )
+}
+
 export default function PaywallBuilderPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const supabase = createClient()
@@ -197,6 +260,14 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   const [newBadge, setNewBadge] = useState("")
   // Localization editor
   const [activeLang, setActiveLang] = useState<string | null>(null)
+  // Block builder state
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null)
+  const [showBlockPicker, setShowBlockPicker] = useState(false)
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false)
+  const [themeExpanded, setThemeExpanded] = useState(false)
+  const [generatingPaywall, setGeneratingPaywall] = useState(false)
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+
   // Quiz state
   const [quiz, setQuiz] = useState<QuizConfig>({
     is_active: false,
@@ -220,7 +291,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
 
     const [{ data: pw }, { data: p }, { data: brief }, { data: sc }] = await Promise.all([
       supabase.from("paywalls").select("*").eq("id", id).single(),
-      supabase.from("plans").select("*").eq("account_id", profile?.account_id).eq("is_active", true),
+      supabase.from("plans").select("*").eq("account_id", profile?.account_id).eq("is_active", true).order("price_monthly", { ascending: true }),
       supabase.from("project_briefs").select("completed_at").eq("account_id", profile?.account_id ?? "").maybeSingle(),
       supabase.from("stripe_connections").select("id").eq("account_id", profile?.account_id ?? "").maybeSingle(),
     ])
@@ -231,7 +302,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
       trust_badges: pw?.trust_badges ?? [],
       localizations: pw?.localizations ?? {},
     }) as Partial<PaywallConfig>)
-    setPlans(p ?? [])
+    setPlans((p ?? []).slice().sort((a, b) => (a.price_monthly ?? 0) - (b.price_monthly ?? 0)))
     setBriefCompleted(!!brief?.completed_at)
     setApiKey(profile ? (await supabase.from("users").select("api_key").eq("id", user.id).single()).data?.api_key ?? "" : "")
     setStripeConnected(!!sc)
@@ -245,10 +316,10 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     if (!profile) return
     const [{ data: sc }, { data: p }] = await Promise.all([
       supabase.from("stripe_connections").select("id").eq("account_id", profile.account_id).maybeSingle(),
-      supabase.from("plans").select("*").eq("account_id", profile.account_id).eq("is_active", true),
+      supabase.from("plans").select("*").eq("account_id", profile.account_id).eq("is_active", true).order("price_monthly", { ascending: true }),
     ])
     setStripeConnected(!!sc)
-    setPlans(p ?? [])
+    setPlans((p ?? []).slice().sort((a, b) => (a.price_monthly ?? 0) - (b.price_monthly ?? 0)))
   }
 
   async function loadOptimizer() {
@@ -437,6 +508,73 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
 
   function removeBadge(i: number) {
     update("trust_badges", (form.trust_badges ?? []).filter((_, idx) => idx !== i))
+  }
+
+  // ── Block builder helpers ──────────────────────────────────────────────────
+
+  function addBlock(type: BlockType) {
+    const newBlock = makeBlock(type)
+    update("blocks", [...(form.blocks ?? []), newBlock])
+    setSelectedBlockId(newBlock.id)
+    setShowBlockPicker(false)
+  }
+
+  function deleteBlock(blockId: string) {
+    update("blocks", (form.blocks ?? []).filter(b => b.id !== blockId))
+    if (selectedBlockId === blockId) setSelectedBlockId(null)
+  }
+
+  function updateBlockProp(blockId: string, propKey: string, value: unknown) {
+    update("blocks", (form.blocks ?? []).map(b =>
+      b.id === blockId ? { ...b, props: { ...b.props, [propKey]: value } } : b
+    ))
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const blocks = form.blocks ?? []
+    const oldIdx = blocks.findIndex(b => b.id === active.id)
+    const newIdx = blocks.findIndex(b => b.id === over.id)
+    if (oldIdx !== -1 && newIdx !== -1) update("blocks", arrayMove(blocks, oldIdx, newIdx))
+  }
+
+  function applyTemplate(tpl: typeof PAYWALL_TEMPLATES[0]) {
+    update("blocks", tpl.blocks.map(b => ({ ...b })))
+    update("display_mode", tpl.displayMode)
+    if (tpl.theme.accentColor) update("design", { ...(form.design ?? {}), accentColor: tpl.theme.accentColor })
+    if (tpl.theme.fontFamily) update("font_family", tpl.theme.fontFamily as "system" | "serif" | "mono")
+    if (tpl.theme.buttonShape) update("button_shape", tpl.theme.buttonShape as "rounded" | "pill" | "square")
+    setSelectedBlockId(null)
+    setShowTemplatePicker(false)
+    toast.success(`Template "${tpl.name}" applied`)
+  }
+
+  async function generateAiPaywall() {
+    if (!briefCompleted) {
+      toast.error("Complete your Project Brief in Settings first")
+      return
+    }
+    setGeneratingPaywall(true)
+    try {
+      const res = await fetch("/api/ai/generate-paywall", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paywall_id: id }),
+      })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error ?? "Generation failed"); return }
+
+      update("blocks", data.blocks ?? [])
+      update("display_mode", data.display_mode ?? "modal")
+      if (data.theme?.accentColor) update("design", { ...(form.design ?? {}), accentColor: data.theme.accentColor })
+      if (data.theme?.fontFamily) update("font_family", data.theme.fontFamily as "system" | "serif" | "mono")
+      if (data.theme?.buttonShape) update("button_shape", data.theme.buttonShape as "rounded" | "pill" | "square")
+      setSelectedBlockId(null)
+      toast.success(`✨ Paywall generated — ${data.blocks?.length ?? 0} blocks`)
+      if (data.reasoning) toast.info(data.reasoning, { duration: 6000 })
+    } catch { toast.error("Failed to generate paywall") }
+    finally { setGeneratingPaywall(false) }
   }
 
   async function handleSave() {
@@ -644,20 +782,127 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
         {/* Panel content */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
 
-          {/* ── DESIGN TAB ─────────────────────────────────────────── */}
+          {/* ── DESIGN TAB — Block Builder ──────────────────────────── */}
           {activeTab === 0 && (
             <>
-              {/* Chameleon mode */}
-              <div className={`p-3 rounded-xl border transition-all ${
-                (form.theme_mode ?? "auto") === "auto"
-                  ? "border-indigo-500/30 bg-indigo-500/8"
-                  : "border-white/6 bg-white/2"
-              }`}>
-                <div className="flex items-start gap-2.5">
-                  <span className="text-base leading-none mt-0.5">🦎</span>
-                  <div className="flex-1">
-                    <div className="flex items-center justify-between mb-1">
-                      <p className="text-xs font-semibold text-white">Chameleon mode</p>
+              {/* Display mode + template picker row */}
+              <div className="flex items-center gap-2">
+                <div className="flex flex-1 rounded-lg border border-white/8 overflow-hidden">
+                  {(["modal", "fullscreen"] as const).map(mode => (
+                    <button
+                      key={mode}
+                      onClick={() => update("display_mode", mode)}
+                      className={`flex-1 py-1.5 text-[10px] font-medium capitalize transition-all ${
+                        (form.display_mode ?? "modal") === mode
+                          ? "bg-indigo-600 text-white"
+                          : "bg-transparent text-[#71717A] hover:text-[#A1A1AA]"
+                      }`}
+                    >
+                      {mode === "modal" ? "⧉ Modal" : "⛶ Fullscreen"}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => setShowTemplatePicker(true)}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/4 border border-white/8 hover:bg-white/8 text-[10px] text-[#A1A1AA] hover:text-white transition-all"
+                >
+                  <Layout className="w-3 h-3" />
+                  Templates
+                </button>
+                <button
+                  onClick={generateAiPaywall}
+                  disabled={generatingPaywall || !briefCompleted}
+                  title={!briefCompleted ? "Complete Project Brief first" : "Generate paywall with AI"}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600/15 border border-indigo-500/25 hover:bg-indigo-600/25 text-[10px] text-indigo-400 hover:text-indigo-300 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {generatingPaywall ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                  AI
+                </button>
+              </div>
+
+              {/* Block canvas */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-[#71717A]" />
+                    <span className="text-xs font-semibold text-[#A1A1AA]">Blocks</span>
+                    <span className="text-[10px] text-[#52525B]">({(form.blocks ?? []).length})</span>
+                  </div>
+                  <button
+                    onClick={() => setShowBlockPicker(p => !p)}
+                    className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-lg bg-indigo-600/15 border border-indigo-500/20 text-indigo-400 hover:bg-indigo-600/25 transition-all"
+                  >
+                    <Plus className="w-2.5 h-2.5" />
+                    Add block
+                  </button>
+                </div>
+
+                {/* Block type picker */}
+                {showBlockPicker && (
+                  <div className="mb-2 p-2 bg-[#111116] border border-white/10 rounded-xl grid grid-cols-2 gap-1">
+                    {BLOCK_PICKER_ORDER.map(type => (
+                      <button
+                        key={type}
+                        onClick={() => addBlock(type)}
+                        className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-white/6 text-left transition-colors"
+                      >
+                        <span className="text-sm">{BLOCK_DEFINITIONS[type].icon}</span>
+                        <span className="text-[10px] text-[#A1A1AA] truncate">{BLOCK_DEFINITIONS[type].label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Sortable list */}
+                {(form.blocks ?? []).length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-8 border border-dashed border-white/10 rounded-xl text-center">
+                    <Layers className="w-6 h-6 text-[#3f3f46] mb-2" />
+                    <p className="text-[11px] text-[#52525B]">No blocks yet</p>
+                    <p className="text-[10px] text-[#3f3f46] mt-0.5">Click &quot;Add block&quot; or pick a template</p>
+                  </div>
+                ) : (
+                  <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                    <SortableContext items={(form.blocks ?? []).map(b => b.id)} strategy={verticalListSortingStrategy}>
+                      <div className="space-y-1">
+                        {(form.blocks ?? []).map(block => (
+                          <SortableBlockItem
+                            key={block.id}
+                            block={block}
+                            isSelected={selectedBlockId === block.id}
+                            onSelect={id => setSelectedBlockId(prev => prev === id ? null : id)}
+                            onDelete={deleteBlock}
+                          />
+                        ))}
+                      </div>
+                    </SortableContext>
+                  </DndContext>
+                )}
+              </div>
+
+              {/* Theme controls — collapsible */}
+              <div className="border border-white/6 rounded-xl overflow-hidden">
+                <button
+                  onClick={() => setThemeExpanded(p => !p)}
+                  className="w-full flex items-center justify-between px-3 py-2.5 bg-white/2 hover:bg-white/4 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">🦎</span>
+                    <span className="text-[11px] font-semibold text-[#A1A1AA]">Theme &amp; Style</span>
+                  </div>
+                  {themeExpanded
+                    ? <ChevronUp className="w-3.5 h-3.5 text-[#52525B]" />
+                    : <ChevronDown className="w-3.5 h-3.5 text-[#52525B]" />
+                  }
+                </button>
+
+                {themeExpanded && (
+                  <div className="p-3 space-y-4 border-t border-white/6">
+                    {/* Chameleon toggle */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-[11px] font-semibold text-white">Chameleon mode</p>
+                        <p className="text-[10px] text-[#71717A]">Auto-match your app&apos;s style</p>
+                      </div>
                       <button
                         onClick={() => update("theme_mode", (form.theme_mode ?? "auto") === "auto" ? "manual" : "auto")}
                         className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0 ${(form.theme_mode ?? "auto") === "auto" ? "bg-indigo-600" : "bg-white/10"}`}
@@ -665,181 +910,71 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                         <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${(form.theme_mode ?? "auto") === "auto" ? "translate-x-4.5" : "translate-x-0.5"}`} />
                       </button>
                     </div>
-                    <p className="text-[10px] text-[#71717A]">Automatically match your app&apos;s fonts, colors and style. The paywall blends into any host app.</p>
-                    {(form.theme_mode ?? "auto") === "auto" && (
-                      <div className="mt-2.5 space-y-1.5">
-                        {([
-                          ["adapt_font", "Adapt fonts"],
-                          ["adapt_colors", "Adapt colors"],
-                          ["adapt_radius", "Adapt radius"],
-                        ] as [keyof PaywallConfig, string][]).map(([key, label]) => (
-                          <div key={key} className="flex items-center justify-between">
-                            <span className="text-[10px] text-[#71717A]">{label}</span>
+
+                    <div className={`space-y-4 ${(form.theme_mode ?? "auto") === "auto" ? "opacity-40 pointer-events-none" : ""}`}>
+                      {/* Accent color */}
+                      <div>
+                        <label className="text-[10px] text-[#71717A] mb-1.5 block font-medium">Accent color</label>
+                        <div className="flex gap-1.5 flex-wrap">
+                          {["#6366F1", "#8B5CF6", "#EC4899", "#10B981", "#F59E0B", "#3B82F6", "#EF4444", "#14B8A6"].map(c => (
                             <button
-                              onClick={() => update(key, !(form[key] ?? true))}
-                              className={`w-7 h-4 rounded-full transition-colors relative ${(form[key] ?? true) ? "bg-indigo-600" : "bg-white/10"}`}
-                            >
-                              <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform ${(form[key] ?? true) ? "translate-x-3.5" : "translate-x-0.5"}`} />
+                              key={c}
+                              onClick={() => update("design", { ...(form.design ?? {}), accentColor: c })}
+                              className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${accentColor === c ? "border-white scale-110" : "border-transparent"}`}
+                              style={{ background: c }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      {/* Font */}
+                      <div>
+                        <label className="text-[10px] text-[#71717A] mb-1.5 block font-medium">Font</label>
+                        <div className="flex gap-1.5">
+                          {(["system", "serif", "mono"] as const).map(f => (
+                            <button key={f} onClick={() => update("font_family", f)}
+                              className={`flex-1 py-1 text-[10px] rounded-lg border capitalize transition-all ${(form.font_family ?? "system") === f ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-400" : "border-white/6 bg-white/3 text-[#71717A]"}`}
+                            >{f}</button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Button shape */}
+                      <div>
+                        <label className="text-[10px] text-[#71717A] mb-1.5 block font-medium">Button shape</label>
+                        <div className="flex gap-1.5">
+                          {(["rounded", "pill", "square"] as const).map(s => (
+                            <button key={s} onClick={() => update("button_shape", s)}
+                              className={`flex-1 py-1 text-[10px] border capitalize transition-all ${s === "pill" ? "rounded-full" : s === "square" ? "rounded" : "rounded-lg"} ${(form.button_shape ?? "rounded") === s ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-400" : "border-white/6 bg-white/3 text-[#71717A]"}`}
+                            >{s}</button>
+                          ))}
+                        </div>
+                      </div>
+                      {/* Overlay opacity */}
+                      <div>
+                        <label className="text-[10px] text-[#71717A] mb-1.5 flex justify-between font-medium">
+                          <span>Overlay opacity</span>
+                          <span className="text-white font-mono">{form.overlay_opacity ?? 65}%</span>
+                        </label>
+                        <input type="range" min={0} max={95} step={5} value={form.overlay_opacity ?? 65}
+                          onChange={e => update("overlay_opacity", Number(e.target.value))}
+                          className="w-full accent-indigo-500 h-1.5"
+                        />
+                      </div>
+                      {/* Closeable + yearly */}
+                      <div className="space-y-2">
+                        {([["closeable", "Closeable"], ["show_yearly_toggle", "Yearly toggle"]] as [keyof PaywallConfig, string][]).map(([key, label]) => (
+                          <div key={key} className="flex items-center justify-between">
+                            <label className="text-[10px] text-[#A1A1AA]">{label}</label>
+                            <button onClick={() => update(key, !form[key])}
+                              className={`w-8 h-4 rounded-full transition-colors relative ${form[key] ? "bg-indigo-600" : "bg-white/10"}`}>
+                              <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-transform ${form[key] ? "translate-x-4.5" : "translate-x-0.5"}`} />
                             </button>
                           </div>
                         ))}
-                        <p className="text-[10px] text-indigo-400/70 mt-1.5 italic">Preview shows default styling. The live paywall adapts to your app automatically.</p>
                       </div>
-                    )}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
-
-              {/* Design controls — dimmed in auto/chameleon mode */}
-              <div className={`space-y-4 ${(form.theme_mode ?? "auto") === "auto" ? "opacity-50 pointer-events-none select-none" : ""}`}>
-
-              {/* Templates */}
-              <div>
-                <label className="text-xs text-[#71717A] mb-2 block font-medium">Template</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { key: "classic-modal", label: "Classic Modal", desc: "Centered overlay" },
-                    { key: "slide-in", label: "Slide-in", desc: "Corner popup" },
-                    { key: "fullscreen", label: "Full Screen", desc: "2-column layout" },
-                    { key: "bottom-sheet", label: "Bottom Sheet", desc: "Slides from bottom" },
-                    { key: "minimal", label: "Minimal", desc: "Ultra-clean" },
-                    { key: "side-panel", label: "Side Panel", desc: "Right drawer" },
-                  ].map(t => (
-                    <button
-                      key={t.key}
-                      onClick={() => update("template", t.key)}
-                      className={`p-2.5 rounded-lg border text-left transition-all ${
-                        form.template === t.key
-                          ? "border-indigo-500/50 bg-indigo-500/10"
-                          : "border-white/6 bg-white/3 hover:border-white/12"
-                      }`}
-                    >
-                      <p className={`text-[11px] font-semibold ${form.template === t.key ? "text-indigo-400" : "text-[#A1A1AA]"}`}>{t.label}</p>
-                      <p className="text-[10px] text-[#52525B] mt-0.5">{t.desc}</p>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Accent color */}
-              <div>
-                <label className="text-xs text-[#71717A] mb-2 block font-medium">Accent color</label>
-                <div className="flex gap-2 flex-wrap">
-                  {["#6366F1", "#8B5CF6", "#EC4899", "#10B981", "#F59E0B", "#3B82F6", "#EF4444", "#14B8A6"].map(c => (
-                    <button
-                      key={c}
-                      onClick={() => update("design", { ...(form.design ?? {}), accentColor: c })}
-                      className={`w-7 h-7 rounded-full border-2 transition-transform hover:scale-110 ${
-                        accentColor === c ? "border-white scale-110" : "border-transparent"
-                      }`}
-                      style={{ background: c }}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Font family */}
-              <div>
-                <label className="text-xs text-[#71717A] mb-2 block font-medium">Font family</label>
-                <div className="flex gap-2">
-                  {[
-                    { key: "system", label: "System" },
-                    { key: "serif", label: "Serif" },
-                    { key: "mono", label: "Mono" },
-                  ].map(f => (
-                    <button
-                      key={f.key}
-                      onClick={() => update("font_family", f.key as "system" | "serif" | "mono")}
-                      className={`flex-1 py-1.5 text-[11px] font-medium rounded-lg border transition-all ${
-                        (form.font_family ?? "system") === f.key
-                          ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-400"
-                          : "border-white/6 bg-white/3 text-[#71717A] hover:text-[#A1A1AA]"
-                      }`}
-                    >
-                      {f.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Button shape */}
-              <div>
-                <label className="text-xs text-[#71717A] mb-2 block font-medium">Button shape</label>
-                <div className="flex gap-2">
-                  {[
-                    { key: "rounded", label: "Rounded" },
-                    { key: "pill", label: "Pill" },
-                    { key: "square", label: "Square" },
-                  ].map(s => (
-                    <button
-                      key={s.key}
-                      onClick={() => update("button_shape", s.key as "rounded" | "pill" | "square")}
-                      className={`flex-1 py-1.5 text-[11px] font-medium border transition-all ${
-                        s.key === "pill" ? "rounded-full" : s.key === "square" ? "rounded" : "rounded-lg"
-                      } ${
-                        (form.button_shape ?? "rounded") === s.key
-                          ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-400"
-                          : "border-white/6 bg-white/3 text-[#71717A] hover:text-[#A1A1AA]"
-                      }`}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Overlay opacity */}
-              <div>
-                <label className="text-xs text-[#71717A] mb-2 flex justify-between font-medium">
-                  <span>Overlay opacity</span>
-                  <span className="text-white font-mono">{form.overlay_opacity ?? 65}%</span>
-                </label>
-                <input
-                  type="range" min={0} max={95} step={5}
-                  value={form.overlay_opacity ?? 65}
-                  onChange={e => update("overlay_opacity", Number(e.target.value))}
-                  className="w-full accent-indigo-500 h-1.5"
-                />
-              </div>
-
-              {/* Animation style */}
-              <div>
-                <label className="text-xs text-[#71717A] mb-2 block font-medium">Animation</label>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {["slide", "fade", "zoom", "none"].map(a => (
-                    <button
-                      key={a}
-                      onClick={() => update("animation_style", a as "slide" | "fade" | "zoom" | "none")}
-                      className={`py-1.5 text-[10px] font-medium rounded-lg border capitalize transition-all ${
-                        (form.animation_style ?? "slide") === a
-                          ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-400"
-                          : "border-white/6 bg-white/3 text-[#71717A] hover:text-[#A1A1AA]"
-                      }`}
-                    >
-                      {a}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Toggles */}
-              <div className="space-y-2.5 pt-1">
-                {([
-                  ["closeable", "Closeable"],
-                  ["show_yearly_toggle", "Yearly toggle"],
-                ] as [keyof PaywallConfig, string][]).map(([key, label]) => (
-                  <div key={key} className="flex items-center justify-between">
-                    <label className="text-xs text-[#A1A1AA]">{label}</label>
-                    <button
-                      onClick={() => update(key, !form[key])}
-                      className={`w-9 h-5 rounded-full transition-colors relative ${form[key] ? "bg-indigo-600" : "bg-white/10"}`}
-                    >
-                      <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${form[key] ? "translate-x-4.5" : "translate-x-0.5"}`} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-              </div>{/* /design controls dim wrapper */}
             </>
           )}
 
@@ -1775,60 +1910,191 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
               </div>
             </div>
             <div className="relative h-[calc(100%-40px)] bg-gradient-to-br from-[#1a1a2e] to-[#16213e] flex items-center justify-center">
-              <PaywallPreview
-                config={form as PaywallConfig}
-                plans={selectedPlans.length > 0 ? selectedPlans : plans.slice(0, 3)}
-                accentColor={accentColor}
-              />
+              {(form.blocks ?? []).length > 0 ? (
+                <BlocksPreview
+                  blocks={form.blocks ?? []}
+                  plans={selectedPlans.length > 0 ? selectedPlans : plans.slice(0, 3)}
+                  theme={{
+                    accentColor,
+                    fontFamily: form.font_family ?? "system",
+                    buttonShape: form.button_shape ?? "rounded",
+                  }}
+                  displayMode={form.display_mode ?? "modal"}
+                />
+              ) : (
+                <PaywallPreview
+                  config={form as PaywallConfig}
+                  plans={selectedPlans.length > 0 ? selectedPlans : plans.slice(0, 3)}
+                  accentColor={accentColor}
+                />
+              )}
             </div>
           </motion.div>
         </div>
       </div>
 
-      {/* Right Panel — Stats */}
-      <div className="w-[220px] flex-shrink-0 border-l border-white/6 p-4">
-        <h3 className="text-xs font-semibold text-[#71717A] mb-3 uppercase tracking-wide">Performance</h3>
-        {form.status === "live" ? (
-          <div className="space-y-3">
-            {[
-              { label: "Views", value: paywall.views.toLocaleString(), color: "text-white" },
-              { label: "Conversions", value: paywall.conversions.toLocaleString(), color: "text-white" },
-              { label: "Conv. rate", value: paywall.views > 0 ? `${((paywall.conversions / paywall.views) * 100).toFixed(1)}%` : "—", color: "text-emerald-400" },
-              { label: "Revenue", value: `$${(paywall.revenue_cents / 100).toFixed(0)}`, color: "text-white" },
-            ].map(({ label, value, color }) => (
-              <div key={label} className="bg-white/3 border border-white/6 rounded-lg p-3">
-                <p className="text-[10px] text-[#71717A] mb-1">{label}</p>
-                <p className={`font-mono text-lg ${color}`}>{value}</p>
+      {/* Right Panel — Block Props or Stats */}
+      <div className="w-[220px] flex-shrink-0 border-l border-white/6 flex flex-col overflow-hidden">
+        {/* Block props editor — shown when a block is selected in Design tab */}
+        {activeTab === 0 && selectedBlockId && (() => {
+          const block = (form.blocks ?? []).find(b => b.id === selectedBlockId)
+          if (!block) return null
+          const def = BLOCK_DEFINITIONS[block.type]
+          return (
+            <div className="flex-1 overflow-y-auto">
+              <div className="flex items-center gap-2 px-3 py-2.5 border-b border-white/6 sticky top-0 bg-[#0A0A0B] z-10">
+                <span className="text-sm">{def.icon}</span>
+                <span className="text-xs font-semibold text-white flex-1">{def.label}</span>
+                <button onClick={() => setSelectedBlockId(null)} className="text-[#52525B] hover:text-[#A1A1AA]">
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
-            ))}
-          </div>
-        ) : (
-          <div className="text-center py-6">
-            <Eye className="w-5 h-5 text-[#52525B] mx-auto mb-2" />
-            <p className="text-xs text-[#52525B]">Publish to see performance data</p>
+              <div className="p-3 space-y-3">
+                {def.propSchema.map(field => {
+                  const val = (block.props as Record<string, unknown>)[field.key]
+                  return (
+                    <div key={field.key}>
+                      <label className="text-[10px] text-[#71717A] mb-1 block font-medium">{field.label}</label>
+                      {field.type === "textarea" ? (
+                        <textarea
+                          value={String(val ?? "")}
+                          onChange={e => updateBlockProp(block.id, field.key, e.target.value)}
+                          rows={2}
+                          placeholder={field.placeholder}
+                          className="hatch-input resize-none text-xs"
+                        />
+                      ) : field.type === "enum" ? (
+                        <div className="flex gap-1 flex-wrap">
+                          {(field.options ?? []).map(opt => (
+                            <button key={opt} onClick={() => updateBlockProp(block.id, field.key, opt)}
+                              className={`px-2 py-1 text-[10px] rounded-lg border capitalize transition-all ${val === opt ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-400" : "border-white/6 bg-white/3 text-[#71717A] hover:text-[#A1A1AA]"}`}
+                            >{opt}</button>
+                          ))}
+                        </div>
+                      ) : field.type === "boolean" ? (
+                        <button
+                          onClick={() => updateBlockProp(block.id, field.key, !val)}
+                          className={`w-9 h-5 rounded-full transition-colors relative ${val ? "bg-indigo-600" : "bg-white/10"}`}
+                        >
+                          <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${val ? "translate-x-4.5" : "translate-x-0.5"}`} />
+                        </button>
+                      ) : field.type === "number" ? (
+                        <input
+                          type="number"
+                          value={Number(val ?? 0)}
+                          onChange={e => updateBlockProp(block.id, field.key, Number(e.target.value))}
+                          className="hatch-input text-xs"
+                        />
+                      ) : (
+                        <input
+                          type="text"
+                          value={String(val ?? "")}
+                          onChange={e => updateBlockProp(block.id, field.key, e.target.value)}
+                          placeholder={field.placeholder}
+                          className="hatch-input text-xs"
+                        />
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })()}
+
+        {/* Default: performance stats + snippet */}
+        {!(activeTab === 0 && selectedBlockId) && (
+          <div className="flex-1 overflow-y-auto p-4">
+            <h3 className="text-xs font-semibold text-[#71717A] mb-3 uppercase tracking-wide">Performance</h3>
+            {form.status === "live" ? (
+              <div className="space-y-3">
+                {[
+                  { label: "Views", value: paywall.views.toLocaleString(), color: "text-white" },
+                  { label: "Conversions", value: paywall.conversions.toLocaleString(), color: "text-white" },
+                  { label: "Conv. rate", value: paywall.views > 0 ? `${((paywall.conversions / paywall.views) * 100).toFixed(1)}%` : "—", color: "text-emerald-400" },
+                  { label: "Revenue", value: `$${(paywall.revenue_cents / 100).toFixed(0)}`, color: "text-white" },
+                ].map(({ label, value, color }) => (
+                  <div key={label} className="bg-white/3 border border-white/6 rounded-lg p-3">
+                    <p className="text-[10px] text-[#71717A] mb-1">{label}</p>
+                    <p className={`font-mono text-lg ${color}`}>{value}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-6">
+                <Eye className="w-5 h-5 text-[#52525B] mx-auto mb-2" />
+                <p className="text-xs text-[#52525B]">Publish to see performance data</p>
+              </div>
+            )}
+
+            <div className="mt-6 pt-4 border-t border-white/6">
+              <h3 className="text-xs font-semibold text-[#71717A] mb-3 uppercase tracking-wide">Install Snippet</h3>
+              <div className="relative bg-[#0A0A0B] border border-white/6 rounded-lg p-2.5 mb-2">
+                <code className="text-[10px] text-indigo-300 font-mono break-all leading-relaxed block pr-6">
+                  {`<script async\n  src="${getSdkScriptUrl()}"\n  data-key="${apiKey || "pk_…"}"\n></script>`}
+                </code>
+                <button onClick={copyInstallSnippet} className="absolute top-2 right-2 p-1 bg-white/5 hover:bg-white/10 rounded border border-white/10 transition-colors" title="Copy snippet">
+                  {snippetCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-[#71717A]" />}
+                </button>
+              </div>
+              <p className="text-[9px] text-[#52525B] mb-3">Paste once in your app&apos;s <code className="font-mono">&lt;head&gt;</code></p>
+
+              <h3 className="text-xs font-semibold text-[#71717A] mb-2 uppercase tracking-wide">Trigger</h3>
+              <div className="bg-[#0A0A0B] border border-white/6 rounded-lg p-2.5">
+                <code className="text-[10px] text-indigo-300 font-mono break-all">
+                  hatch.show(&apos;{id}&apos;)
+                </code>
+              </div>
+            </div>
           </div>
         )}
+      </div>
 
-        <div className="mt-6 pt-4 border-t border-white/6">
-          <h3 className="text-xs font-semibold text-[#71717A] mb-3 uppercase tracking-wide">Install Snippet</h3>
-          <div className="relative bg-[#0A0A0B] border border-white/6 rounded-lg p-2.5 mb-2">
-            <code className="text-[10px] text-indigo-300 font-mono break-all leading-relaxed block pr-6">
-              {`<script async\n  src="${getSdkScriptUrl()}"\n  data-key="${apiKey || "pk_…"}"\n></script>`}
-            </code>
-            <button onClick={copyInstallSnippet} className="absolute top-2 right-2 p-1 bg-white/5 hover:bg-white/10 rounded border border-white/10 transition-colors" title="Copy snippet">
-              {snippetCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3 text-[#71717A]" />}
-            </button>
-          </div>
-          <p className="text-[9px] text-[#52525B] mb-3">Paste once in your app&apos;s <code className="font-mono">&lt;head&gt;</code></p>
-
-          <h3 className="text-xs font-semibold text-[#71717A] mb-2 uppercase tracking-wide">Trigger</h3>
-          <div className="bg-[#0A0A0B] border border-white/6 rounded-lg p-2.5">
-            <code className="text-[10px] text-indigo-300 font-mono break-all">
-              hatch.show(&apos;{id}&apos;)
-            </code>
+      {/* Template picker modal */}
+      {showTemplatePicker && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-6">
+          <div className="bg-[#111116] border border-white/10 rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col overflow-hidden shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Paywall templates</h3>
+                <p className="text-[11px] text-[#71717A] mt-0.5">Pick a starting point and customise it</p>
+              </div>
+              <button onClick={() => setShowTemplatePicker(false)} className="w-7 h-7 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-[#71717A] hover:text-white transition-colors">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="overflow-y-auto p-4 grid grid-cols-3 gap-3">
+              {PAYWALL_TEMPLATES.map(tpl => (
+                <button
+                  key={tpl.id}
+                  onClick={() => applyTemplate(tpl)}
+                  className="group text-left rounded-xl border border-white/8 hover:border-indigo-500/40 overflow-hidden transition-all hover:bg-indigo-500/4"
+                >
+                  {/* Mini preview */}
+                  <div className="bg-[#0A0A0F] h-36 overflow-hidden relative pointer-events-none">
+                    <div className="absolute inset-0 scale-[0.55] origin-top-left" style={{ width: "182%", height: "182%" }}>
+                      <BlocksPreview
+                        blocks={tpl.blocks}
+                        plans={plans.slice(0, 3)}
+                        theme={{ accentColor: tpl.theme.accentColor ?? "#6366F1", fontFamily: tpl.theme.fontFamily ?? "system", buttonShape: tpl.theme.buttonShape ?? "rounded" }}
+                        displayMode={tpl.displayMode}
+                      />
+                    </div>
+                  </div>
+                  <div className="px-3 py-2.5">
+                    <p className="text-[11px] font-semibold text-white group-hover:text-indigo-300 transition-colors">{tpl.name}</p>
+                    <p className="text-[10px] text-[#52525B] mt-0.5 line-clamp-2">{tpl.tagline}</p>
+                    <div className="flex items-center gap-1 mt-1.5">
+                      <span className="text-[9px] text-[#52525B] border border-white/8 rounded px-1.5 py-0.5 capitalize">{tpl.displayMode}</span>
+                      <span className="text-[9px] text-[#52525B] border border-white/8 rounded px-1.5 py-0.5">{tpl.blocks.length} blocks</span>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <style jsx global>{`
         .hatch-input {

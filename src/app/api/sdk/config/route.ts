@@ -14,6 +14,17 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "x-hatch-key",
 }
 
+/**
+ * DJB2 hash — fast, non-cryptographic, good distribution for fingerprinting.
+ * Used to derive a stable server-side user key from IP + User-Agent when the
+ * client-side `uid` param is unavailable (incognito mode, localStorage blocked).
+ */
+function hashFP(s: string): string {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i)
+  return (h >>> 0).toString(36)
+}
+
 const SEGMENT_CONFIDENCE_THRESHOLD = 10
 
 type Variant = {
@@ -33,7 +44,7 @@ type Variant = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function fetchPlansForIds(supabase: any, planIds: string[]): Promise<any[]> {
   if (!planIds.length) return []
-  const { data } = await supabase.from("plans").select("*").in("id", planIds)
+  const { data } = await supabase.from("plans").select("*").in("id", planIds).order("price_monthly", { ascending: true })
   return data ?? []
 }
 
@@ -73,13 +84,16 @@ async function applyDynamicPricing(
     if (stickyPrices && Object.keys(stickyPrices).length > 0) {
       console.log(`[sdk/config] Sticky prices for user ${userKey.slice(0, 16)}: ${JSON.stringify(stickyPrices)}`)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const enrichedPlans = plans.map((plan: any) => {
-        const stickyPrice = stickyPrices[plan.id]
-        if (stickyPrice && plan.dynamic_pricing_enabled !== false && !plan.pricing_frozen) {
-          return { ...plan, price_monthly: stickyPrice }
-        }
-        return plan
-      })
+      const enrichedPlans = plans
+        .map((plan: any) => {
+          const stickyPrice = stickyPrices[plan.id]
+          if (stickyPrice && plan.dynamic_pricing_enabled !== false && !plan.pricing_frozen) {
+            return { ...plan, price_monthly: stickyPrice }
+          }
+          return plan
+        })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .sort((a: any, b: any) => (a.price_monthly ?? 0) - (b.price_monthly ?? 0))
       return { plans: enrichedPlans, priceAssignments: {}, allPlanPrices: stickyPrices }
     }
   }
@@ -119,20 +133,37 @@ async function applyDynamicPricing(
           return plan
         }
 
+        // ── Filter to valid ±8% window — silently ignore stale wide candidates ──
+        // This ensures old DB rows (e.g. $19/$39 for a $29 anchor) never reach the
+        // bandit even before the founder runs "Reset candidates to ±8% window".
+        const validPrices = new Set(
+          generatePriceCandidates(
+            plan.price_monthly ?? 0,
+            plan.price_floor_cents  || undefined,
+            plan.price_ceiling_cents || undefined,
+            plan.pricing_aggressiveness ?? "balanced",
+          )
+        )
+        const windowCandidates = (candidates as Array<{ id: string; price_cents: number; is_anchor: boolean }>)
+          .filter(c => validPrices.has(c.price_cents))
+        // If every existing candidate is outside the new window (fresh plan with stale
+        // data) fall back to the full candidate list so we always serve something.
+        const activeCandidates = windowCandidates.length > 0 ? windowCandidates : candidates
+
         // Cache for joint optimisation post-processing
-        planCandidatesCache.set(plan.id, candidates)
+        planCandidatesCache.set(plan.id, activeCandidates)
 
         // Fetch posteriors for this pricing segment (+ global fallback)
         const [{ data: segPosts }, { data: globalPosts }] = await Promise.all([
           supabase
             .from("price_point_posteriors")
             .select("price_candidate_id, alpha, beta, impressions")
-            .in("price_candidate_id", candidates.map((c: { id: string }) => c.id))
+            .in("price_candidate_id", activeCandidates.map((c: { id: string }) => c.id))
             .eq("segment_hash", pricingSegHash),
           supabase
             .from("price_point_posteriors")
             .select("price_candidate_id, alpha, beta, impressions")
-            .in("price_candidate_id", candidates.map((c: { id: string }) => c.id))
+            .in("price_candidate_id", activeCandidates.map((c: { id: string }) => c.id))
             .eq("segment_hash", "global"),
         ])
 
@@ -147,7 +178,7 @@ async function applyDynamicPricing(
             [p.price_candidate_id, p]
           )
         )
-        const effectivePosteriors = candidates.map((c: { id: string }) => {
+        const effectivePosteriors = activeCandidates.map((c: { id: string }) => {
           return segMap.get(c.id) ?? globalMap.get(c.id) ?? { price_candidate_id: c.id, alpha: 1, beta: 1, impressions: 0 }
         })
 
@@ -158,14 +189,14 @@ async function applyDynamicPricing(
         ).catch(() => null)
 
         const { candidate: chosen, mode: selectionMode } = demandModel && demandModel.n_obs >= 1
-          ? selectPriceWithDemandModel(demandModel, candidates, effectivePosteriors, segmentInput)
-          : selectPriceCandidate(candidates, effectivePosteriors)
+          ? selectPriceWithDemandModel(demandModel, activeCandidates, effectivePosteriors, segmentInput)
+          : selectPriceCandidate(activeCandidates, effectivePosteriors)
 
         const modelLabel = demandModel && demandModel.n_obs >= 1 ? "demand" : "beta"
         console.log(`[sdk/config] ${modelLabel}/${selectionMode} pick for plan "${plan.name}": ${chosen.price_cents}¢ (seg ${pricingSegHash.slice(0, 30)})`)
 
         // Bootstrap posteriors for any candidate not yet seen in this pricing segment
-        const missingCandidates = candidates.filter((c: { id: string }) => !segMap.has(c.id))
+        const missingCandidates = activeCandidates.filter((c: { id: string }) => !segMap.has(c.id))
         if (missingCandidates.length > 0) {
           await supabase.from("price_point_posteriors").upsert(
             missingCandidates.map((c: { id: string }) => ({
@@ -194,6 +225,10 @@ async function applyDynamicPricing(
   for (const [planId, pa] of Object.entries(priceAssignments)) {
     allPlanPrices[planId] = pa.cents
   }
+
+  // Sort plans by effective price ascending — cheapest plan always shown first
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  enrichedPlans.sort((a: any, b: any) => (a.price_monthly ?? 0) - (b.price_monthly ?? 0))
 
   // ── Joint paywall optimisation (multinomial logit) ────────────────────────────
   // When the choice model has ≥ CHOICE_MODEL_MIN_OBS observations for this paywall,
@@ -292,6 +327,20 @@ export async function GET(request: NextRequest) {
   const sessionId = request.nextUrl.searchParams.get("session")
   const userKey   = request.nextUrl.searchParams.get("uid") ?? null
 
+  // ── Server-side IP fingerprint fallback ────────────────────────────────────
+  // When uid is null (incognito mode, localStorage blocked, first visit), derive
+  // a stable fingerprint from the client's IP + User-Agent so prices stay sticky
+  // even without client-side persistence.  Prefix "fp_" distinguishes it from
+  // real user IDs ("anon_…" or app-defined user IDs).
+  const clientIp = (request.headers.get("x-forwarded-for") ?? "").split(",")[0].trim()
+                || request.headers.get("x-real-ip")
+                || ""
+  const ua       = request.headers.get("user-agent") ?? ""
+  const ipKey    = clientIp ? "fp_" + hashFP(clientIp + ua) : null
+
+  // Prefer explicit uid (stable across IPs), fall back to IP fingerprint
+  const effectiveUserKey = userKey ?? ipKey
+
   // Segment signals from SDK
   const quizAnswersRaw = request.nextUrl.searchParams.get("quiz_answers")
   const utmSource      = request.nextUrl.searchParams.get("utm_source")
@@ -364,11 +413,11 @@ export async function GET(request: NextRequest) {
     ])
 
     const { plans: pricedPlans, allPlanPrices } = await applyDynamicPricing(
-      supabase, plans, sessionId, paywallId, user.account_id, segmentHash, segmentInput, userKey
+      supabase, plans, sessionId, paywallId, user.account_id, segmentHash, segmentInput, effectiveUserKey
     )
     const base = withDefaults({ ...paywall, plans: pricedPlans })
     const enriched = await applyVariantContextual(
-      supabase, base, sessionId, user.account_id, segmentHash, segmentFeatures, userKey, allPlanPrices
+      supabase, base, sessionId, user.account_id, segmentHash, segmentFeatures, effectiveUserKey, allPlanPrices
     )
 
     return NextResponse.json(
@@ -406,19 +455,21 @@ export async function GET(request: NextRequest) {
   const paywallsWithPlans = (paywalls as any[]).map(p =>
     withDefaults({
       ...p,
-      plans: (p.plan_ids ?? []).map((pid: string) => planMap.get(pid)).filter(Boolean),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      plans: ((p.plan_ids ?? []).map((pid: string) => planMap.get(pid)).filter(Boolean) as any[])
+        .sort((a: any, b: any) => (a.price_monthly ?? 0) - (b.price_monthly ?? 0)),
     })
   )
 
   // Dynamic pricing on the first (featured) paywall's plans
   const firstPaywall = paywallsWithPlans[0]
   const { plans: pricedFirstPlans, allPlanPrices } = await applyDynamicPricing(
-    supabase, firstPaywall.plans ?? [], sessionId, firstPaywall.id, user.account_id, segmentHash, segmentInput, userKey
+    supabase, firstPaywall.plans ?? [], sessionId, firstPaywall.id, user.account_id, segmentHash, segmentInput, effectiveUserKey
   )
   const firstWithPricing = { ...firstPaywall, plans: pricedFirstPlans }
 
   const enrichedFirst = await applyVariantContextual(
-    supabase, firstWithPricing, sessionId, user.account_id, segmentHash, segmentFeatures, userKey, allPlanPrices
+    supabase, firstWithPricing, sessionId, user.account_id, segmentHash, segmentFeatures, effectiveUserKey, allPlanPrices
   )
   const result = [enrichedFirst, ...paywallsWithPlans.slice(1)]
 

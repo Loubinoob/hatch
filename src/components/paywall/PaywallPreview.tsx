@@ -56,7 +56,10 @@ const RADIUS: Record<string, string> = {
   square: "4px",
 }
 
-export default function PaywallPreview({ config, plans, accentColor = "#6366F1" }: Props) {
+export default function PaywallPreview({ config, plans: rawPlans, accentColor = "#6366F1" }: Props) {
+  // Always render plans cheapest-first. is_most_popular is only a visual badge — never a sort key.
+  const plans = rawPlans.slice().sort((a, b) => (a.price_monthly ?? 0) - (b.price_monthly ?? 0))
+
   const [yearly, setYearly] = useState(false)
   const [closed, setClosed] = useState(false)
 
