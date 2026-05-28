@@ -11,52 +11,58 @@ export type PaywallTemplate = {
   blocks:       Block[]
 }
 
-// ─── 1. Minimal Premium ──────────────────────────────────────────────────────
+// ─── 1. Minimal Premium (Linear / Stripe vibe) ───────────────────────────────
 const minimalPremium: PaywallTemplate = {
   id: "minimal-premium",
   name: "Minimal Premium",
-  tagline: "Refined. Dark. Trustworthy.",
+  tagline: "Refined. Restrained. Trustworthy.",
   tone: "Premium SaaS",
   displayMode: "modal",
   theme: { accentColor: "#6366F1", fontFamily: "system", buttonShape: "rounded" },
   blocks: [
     makeBlock("hero", {
-      headline: "Upgrade to Pro",
-      subheadline: "Unlock every feature with a single subscription.",
+      eyebrow: "Upgrade",
+      headline: "Get more done with Pro",
+      subheadline: "Unlock every feature with a single subscription. No tiers, no surprises.",
       alignment: "center",
+      paddingY: "l",
+      bgGradient: "linear-gradient(180deg, rgba(99,102,241,0.12), rgba(99,102,241,0))",
     }),
     makeBlock("plans", { ctaCopy: "Start free trial" }),
-    makeBlock("guarantee", { text: "30-day money-back guarantee — cancel anytime" }),
+    makeBlock("guarantee", { text: "14-day free trial · Cancel anytime · No credit card required", paddingY: "s" }),
   ],
 }
 
-// ─── 2. Vibrant Fitness ──────────────────────────────────────────────────────
+// ─── 2. Vibrant Fitness (energetic, transformation) ──────────────────────────
 const vibrantFitness: PaywallTemplate = {
   id: "vibrant-fitness",
   name: "Vibrant Fitness",
-  tagline: "Bold, energetic, results-oriented.",
+  tagline: "Bold. Energetic. Results-oriented.",
   tone: "Fitness / Wellness",
   displayMode: "fullscreen",
   theme: { accentColor: "#10B981", fontFamily: "system", buttonShape: "pill" },
   blocks: [
     makeBlock("hero", {
-      eyebrow: "🔥 Transform your training",
-      headline: "Train Smarter, Not Harder",
-      subheadline: "Access all workouts, nutrition plans and coaching — one flat price.",
+      eyebrow: "🔥 Transform in 90 days",
+      headline: "Train smarter. Eat better. Win.",
+      subheadline: "Access every workout, meal plan and coaching session. One subscription, every goal.",
       alignment: "center",
+      paddingY: "l",
+      bgGradient: "linear-gradient(135deg, rgba(16,185,129,0.18), rgba(6,95,70,0.06))",
     }),
     makeBlock("stats", {
       items: [
-        { value: "500+", label: "Workouts" },
-        { value: "4.9★", label: "App store rating" },
-        { value: "50K+", label: "Active members" },
+        { value: "500+",  label: "Workouts" },
+        { value: "4.9★",  label: "App store" },
+        { value: "50K+",  label: "Members" },
       ],
+      paddingY: "m",
     }),
     makeBlock("plans", { ctaCopy: "Start my transformation" }),
     makeBlock("testimonials", {
       title: "Real results from real people",
       items: [
-        { quote: "Lost 12 kg in 3 months following the program.", author: "Thomas R.", role: "Member since 2024", avatar: null },
+        { quote: "Lost 12 kg in 3 months. The program just works.", author: "Thomas R.", role: "Member since 2024", avatar: null },
         { quote: "Finally an app that keeps me accountable.", author: "Julie M.", role: "Member since 2023", avatar: null },
       ],
     }),
@@ -64,7 +70,7 @@ const vibrantFitness: PaywallTemplate = {
   ],
 }
 
-// ─── 3. Productivity SaaS ────────────────────────────────────────────────────
+// ─── 3. Productivity SaaS (clean B2B) ────────────────────────────────────────
 const productivitySaas: PaywallTemplate = {
   id: "productivity-saas",
   name: "Productivity SaaS",
@@ -75,44 +81,44 @@ const productivitySaas: PaywallTemplate = {
   blocks: [
     makeBlock("hero", {
       eyebrow: "Upgrade your workflow",
-      headline: "Work faster with Pro",
-      subheadline: "Everything your team needs to ship more, faster.",
+      headline: "Ship more, faster",
+      subheadline: "Everything your team needs to move from idea to launch — in one workspace.",
       alignment: "left",
+      paddingY: "l",
     }),
     makeBlock("features", {
       title: "What's included in Pro",
       items: [
-        { icon: "⚡", text: "Unlimited projects & workspaces" },
-        { icon: "📊", text: "Advanced analytics and reports" },
-        { icon: "🔌", text: "Integrations with 50+ tools" },
-        { icon: "🤖", text: "AI-powered automation" },
-        { icon: "🔒", text: "Enterprise SSO & audit logs" },
+        { icon: "zap",      text: "Unlimited projects, workspaces and members" },
+        { icon: "trending", text: "Advanced analytics and team-level reports" },
+        { icon: "sparkles", text: "AI-powered automation across every workflow" },
+        { icon: "lock",     text: "Enterprise SSO, audit logs and SOC 2 compliance" },
       ],
     }),
     makeBlock("comparison", {
       title: "Free vs Pro",
       rows: [
-        { feature: "Projects",       values: ["3",    "Unlimited"] },
-        { feature: "Team members",   values: ["1",    "Unlimited"] },
-        { feature: "Storage",        values: ["1 GB", "100 GB"] },
-        { feature: "Analytics",      values: ["Basic","Advanced"] },
-        { feature: "API access",     values: ["✗",    "✓"] },
-        { feature: "Priority support",values: ["✗",   "✓"] },
+        { feature: "Projects",         values: ["3",     "Unlimited"] },
+        { feature: "Team members",     values: ["1",     "Unlimited"] },
+        { feature: "Storage",          values: ["1 GB",  "100 GB"] },
+        { feature: "Analytics",        values: ["Basic", "Advanced"] },
+        { feature: "API access",       values: ["no",    "yes"] },
+        { feature: "Priority support", values: ["no",    "yes"] },
       ],
     }),
     makeBlock("plans", { ctaCopy: "Upgrade to Pro" }),
     makeBlock("faq", {
       title: "Common questions",
       items: [
-        { question: "Can I switch plans anytime?", answer: "Yes, upgrade or downgrade at any time — prorated billing applies." },
-        { question: "Do you offer team discounts?", answer: "Yes — contact us for teams of 10 or more." },
-        { question: "Is my data safe?", answer: "SOC 2 certified, end-to-end encrypted, EU data residency available." },
+        { question: "Can I switch plans anytime?", answer: "Yes — upgrade or downgrade at any time. We prorate billing automatically." },
+        { question: "Do you offer team discounts?", answer: "Yes, contact us for teams of 10 or more — we offer volume pricing." },
+        { question: "Is my data safe?", answer: "SOC 2 Type II certified, end-to-end encrypted, with optional EU data residency." },
       ],
     }),
   ],
 }
 
-// ─── 4. Gaming / Energetic ───────────────────────────────────────────────────
+// ─── 4. Gaming / Energetic (bold, urgent) ────────────────────────────────────
 const gamingEnergetic: PaywallTemplate = {
   id: "gaming-energetic",
   name: "Gaming / Energetic",
@@ -122,36 +128,37 @@ const gamingEnergetic: PaywallTemplate = {
   theme: { accentColor: "#8B5CF6", fontFamily: "mono", buttonShape: "square" },
   blocks: [
     makeBlock("hero", {
-      eyebrow: "⚡ LIMITED TIME OFFER",
-      headline: "Level Up. No Limits.",
+      eyebrow: "⚡ FOUNDER PRICING",
+      headline: "LEVEL UP. NO LIMITS.",
       subheadline: "Unlock every feature, skin and mode. Elite access starts now.",
       alignment: "center",
+      paddingY: "l",
+      bgGradient: "linear-gradient(135deg, rgba(139,92,246,0.25), rgba(67,33,123,0.08))",
     }),
     makeBlock("stats", {
       items: [
-        { value: "2M+",  label: "Players" },
-        { value: "99ms", label: "Latency" },
-        { value: "24/7", label: "Servers" },
+        { value: "2M+",  label: "Players online" },
+        { value: "99ms", label: "Avg latency" },
+        { value: "24/7", label: "Global servers" },
       ],
     }),
     makeBlock("urgency", {
-      text: "Founder pricing ends in",
-      type: "countdown",
-      endDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+      text: "Founder pricing ends in 3 days",
+      subtext: "After that, $14.99/mo standard",
     }),
-    makeBlock("plans", { ctaCopy: "CLAIM ACCESS NOW" }),
+    makeBlock("plans", { ctaCopy: "CLAIM ELITE ACCESS" }),
     makeBlock("testimonials", {
       title: "Players love it",
       items: [
-        { quote: "Best upgrade I've made — the extra features are insane.", author: "xViper_99", role: "Diamond rank", avatar: null },
-        { quote: "Worth every cent. The lag reduction alone pays for itself.", author: "Ryksor", role: "Top 500", avatar: null },
+        { quote: "Best upgrade I've made. The extra features are insane.", author: "xViper_99", role: "Diamond rank", avatar: null },
+        { quote: "Worth every cent. Latency drop alone pays for itself.", author: "Ryksor", role: "Top 500", avatar: null },
       ],
     }),
-    makeBlock("guarantee", { text: "72-hour refund, no questions asked" }),
+    makeBlock("guarantee", { text: "72-hour full refund · No questions asked" }),
   ],
 }
 
-// ─── 5. Creator / Personal ───────────────────────────────────────────────────
+// ─── 5. Creator / Personal (warm, community) ─────────────────────────────────
 const creatorPersonal: PaywallTemplate = {
   id: "creator-personal",
   name: "Creator Personal",
@@ -161,30 +168,32 @@ const creatorPersonal: PaywallTemplate = {
   theme: { accentColor: "#F59E0B", fontFamily: "serif", buttonShape: "rounded" },
   blocks: [
     makeBlock("hero", {
-      headline: "Join the community",
-      subheadline: "Get exclusive access to all content, monthly calls and the private community.",
+      eyebrow: "Join the inner circle",
+      headline: "Become a member",
+      subheadline: "Every essay, every archive, monthly live calls and the private community.",
       alignment: "center",
+      paddingY: "l",
+      bgGradient: "linear-gradient(180deg, rgba(245,158,11,0.10), rgba(245,158,11,0))",
     }),
     makeBlock("testimonials", {
       title: "What members say",
       items: [
         { quote: "Worth 10× the price. The community alone changed my career.", author: "Alex T.", role: "Member", avatar: null },
-        { quote: "I look forward to every new post. Genuinely the best thing I subscribe to.", author: "Priya D.", role: "Member since 2023", avatar: null },
-        { quote: "Opened my eyes to opportunities I didn't know existed.", author: "Chris W.", role: "Member", avatar: null },
+        { quote: "The best thing I subscribe to. I look forward to every drop.", author: "Priya D.", role: "Member since 2023", avatar: null },
       ],
     }),
     makeBlock("plans", { ctaCopy: "Become a member" }),
     makeBlock("faq", {
       title: "Questions",
       items: [
-        { question: "What do I get?", answer: "All articles, archives, monthly live calls and the private Discord." },
-        { question: "Can I cancel?", answer: "Cancel anytime from your account settings. No fees, no questions." },
+        { question: "What do I get exactly?", answer: "All articles + archives, monthly live calls and the private Discord community." },
+        { question: "Can I cancel?", answer: "Cancel any time from your account — no fees, no questions." },
       ],
     }),
   ],
 }
 
-// ─── 6. Neo-bank / Fintech ───────────────────────────────────────────────────
+// ─── 6. Neo-bank / Fintech (trust-first, premium dark) ───────────────────────
 const neobankFintech: PaywallTemplate = {
   id: "neobank-fintech",
   name: "Neo-bank / Fintech",
@@ -196,118 +205,123 @@ const neobankFintech: PaywallTemplate = {
     makeBlock("hero", {
       eyebrow: "Premium tier",
       headline: "Banking that works as hard as you do",
-      subheadline: "Unlimited transfers, metal card, cashback and concierge — in one plan.",
+      subheadline: "Unlimited transfers, metal card, cashback and concierge — one premium plan.",
       alignment: "left",
+      paddingY: "l",
+      bgGradient: "linear-gradient(135deg, rgba(20,184,166,0.14), rgba(8,51,68,0.04))",
     }),
     makeBlock("features", {
       title: "Premium benefits",
       items: [
-        { icon: "💳", text: "Metal card, delivered in 2 days" },
-        { icon: "💸", text: "2% cashback on all purchases" },
-        { icon: "🌍", text: "No foreign transaction fees" },
-        { icon: "🔒", text: "Insurance: travel, phone, rental" },
-        { icon: "📞", text: "Dedicated concierge 24/7" },
+        { icon: "crown",  text: "Metal card delivered in 48 hours" },
+        { icon: "trending", text: "2% cashback on every purchase, no cap" },
+        { icon: "sparkles", text: "Zero foreign transaction fees worldwide" },
+        { icon: "shield", text: "Travel, phone, and rental insurance included" },
+        { icon: "award",  text: "Dedicated 24/7 concierge service" },
       ],
     }),
     makeBlock("plans", { ctaCopy: "Upgrade to Premium" }),
     makeBlock("logos", {
-      title: "Trusted by 2M+ users worldwide",
-      items: [{ name: "TechCrunch" }, { name: "Forbes" }, { name: "Bloomberg" }],
+      title: "As seen in",
+      items: [{ name: "TechCrunch" }, { name: "Forbes" }, { name: "Bloomberg" }, { name: "WIRED" }],
     }),
-    makeBlock("guarantee", { text: "FSCS protected · Bank-grade encryption · ISO 27001" }),
+    makeBlock("guarantee", { text: "FSCS protected · Bank-grade encryption · ISO 27001 certified" }),
   ],
 }
 
-// ─── 7. Course / Education ───────────────────────────────────────────────────
+// ─── 7. Course / Education (transformation, curriculum) ──────────────────────
 const courseEducation: PaywallTemplate = {
   id: "course-education",
   name: "Course / Education",
-  tagline: "Curriculum-forward, transformation-driven.",
+  tagline: "Curriculum-forward. Transformation-driven.",
   tone: "Online Course / EdTech",
   displayMode: "fullscreen",
   theme: { accentColor: "#EC4899", fontFamily: "system", buttonShape: "rounded" },
   blocks: [
     makeBlock("hero", {
-      eyebrow: "Enroll now",
+      eyebrow: "Now enrolling — Cohort 12",
       headline: "Master the skill that changes everything",
-      subheadline: "12 modules, 40+ lessons, lifetime access and a community of 5 000 learners.",
+      subheadline: "12 modules · 40+ lessons · lifetime access · 5,000-strong community",
       alignment: "center",
+      paddingY: "l",
+      bgGradient: "linear-gradient(135deg, rgba(236,72,153,0.16), rgba(157,23,77,0.04))",
     }),
     makeBlock("features", {
       title: "What you'll learn",
       items: [
         { icon: "📘", text: "Module 1 — Foundations & mental models" },
-        { icon: "🎯", text: "Module 2 — Hands-on projects" },
-        { icon: "🤝", text: "Module 3 — Building in public" },
-        { icon: "🚀", text: "Module 4 — Monetisation strategies" },
-        { icon: "♾️", text: "Bonus — lifetime access + future updates" },
+        { icon: "🎯", text: "Module 2 — Hands-on projects with real feedback" },
+        { icon: "🤝", text: "Module 3 — Building in public + accountability" },
+        { icon: "🚀", text: "Module 4 — Monetisation playbook + templates" },
+        { icon: "♾️", text: "Bonus — lifetime access + every future update" },
       ],
     }),
     makeBlock("testimonials", {
-      title: "Student results",
+      title: "Student outcomes",
       items: [
-        { quote: "Went from zero to first paying client in 6 weeks.", author: "Lena P.", role: "Graduate", avatar: null },
-        { quote: "The most practical course I've ever taken. 100% recommend.", author: "Ben A.", role: "Graduate", avatar: null },
+        { quote: "Zero to first paying client in 6 weeks.", author: "Lena P.", role: "Graduate, Cohort 8", avatar: null },
+        { quote: "The most practical course I've ever taken. 100% recommend.", author: "Ben A.", role: "Graduate, Cohort 10", avatar: null },
       ],
     }),
     makeBlock("plans", { ctaCopy: "Enroll now" }),
-    makeBlock("guarantee", { text: "30-day full refund — if you don't love it, you pay nothing" }),
+    makeBlock("guarantee", { text: "30-day full refund — if you don't love it, you don't pay" }),
     makeBlock("faq", {
       title: "Course FAQ",
       items: [
-        { question: "Is this suitable for beginners?", answer: "Absolutely — we start from the very basics." },
-        { question: "How long do I have access?", answer: "Lifetime access, including all future updates." },
-        { question: "Is there a certificate?", answer: "Yes, a verifiable completion certificate on LinkedIn." },
+        { question: "Is this suitable for beginners?", answer: "Absolutely. We start from the very basics and ramp up systematically." },
+        { question: "How long do I have access?", answer: "Lifetime — including every future update at no extra charge." },
+        { question: "Is there a certificate?", answer: "Yes, a verifiable LinkedIn-ready completion certificate." },
       ],
     }),
   ],
 }
 
-// ─── 8. AI / Tech Tool ───────────────────────────────────────────────────────
+// ─── 8. AI / Tech Tool (data-forward, dev-focused) ───────────────────────────
 const aiTechTool: PaywallTemplate = {
   id: "ai-tech-tool",
   name: "AI / Tech Tool",
-  tagline: "Data-driven, comparison table, tech-forward.",
+  tagline: "Data-driven. Comparison-table. Developer-first.",
   tone: "AI / Developer Tool",
   displayMode: "fullscreen",
   theme: { accentColor: "#6366F1", fontFamily: "mono", buttonShape: "rounded" },
   blocks: [
     makeBlock("hero", {
-      eyebrow: "Powered by Claude AI",
+      eyebrow: "▲ Powered by Claude",
       headline: "10× your output with AI",
-      subheadline: "The only tool that combines real-time data, AI reasoning and no-code automation.",
+      subheadline: "Real-time data, AI reasoning and no-code automation — in a single CLI + API.",
       alignment: "left",
+      paddingY: "l",
     }),
     makeBlock("stats", {
       items: [
         { value: "10×",   label: "Faster workflows" },
         { value: "99.9%", label: "Uptime SLA" },
-        { value: "SOC 2", label: "Certified" },
+        { value: "SOC 2", label: "Type II certified" },
       ],
     }),
     makeBlock("comparison", {
       title: "Starter vs Pro",
       rows: [
-        { feature: "AI requests / mo",  values: ["500",       "Unlimited"] },
-        { feature: "Integrations",      values: ["5",         "Unlimited"] },
-        { feature: "Custom models",     values: ["✗",         "✓"] },
-        { feature: "Team workspace",    values: ["✗",         "✓"] },
-        { feature: "SLA",               values: ["Best-effort","99.9%"] },
+        { feature: "AI requests / mo",  values: ["500",          "Unlimited"] },
+        { feature: "Integrations",      values: ["5",            "Unlimited"] },
+        { feature: "Custom models",     values: ["no",           "yes"] },
+        { feature: "Team workspace",    values: ["no",           "yes"] },
+        { feature: "SLA",               values: ["Best-effort",  "99.9%"] },
       ],
     }),
     makeBlock("plans", { ctaCopy: "Start free trial" }),
     makeBlock("faq", {
       title: "Technical FAQ",
       items: [
-        { question: "Which AI models are available?", answer: "Claude Opus, Sonnet and Haiku — switch per request." },
-        { question: "Is there rate limiting?", answer: "Pro users have no hard limits — fair-use policy applies." },
-        { question: "Can I self-host?", answer: "Enterprise plan includes on-premise deployment." },
+        { question: "Which AI models are available?", answer: "Claude Opus, Sonnet and Haiku — switch per request, no rate limits on Pro." },
+        { question: "Is there rate limiting?", answer: "Pro users have no hard limits. Fair-use policy applies (10K req/day soft cap)." },
+        { question: "Can I self-host?", answer: "Enterprise plan includes on-premise and air-gapped deployment options." },
       ],
     }),
   ],
 }
 
-// ─── 9. Simple Quick ─────────────────────────────────────────────────────────
+// ─── 9. Simple Quick (express modal) ─────────────────────────────────────────
 const simpleQuick: PaywallTemplate = {
   id: "simple-quick",
   name: "Simple Quick",
@@ -318,14 +332,16 @@ const simpleQuick: PaywallTemplate = {
   blocks: [
     makeBlock("hero", {
       headline: "Go Pro",
-      subheadline: "Unlock all features for less than a coffee a month.",
+      subheadline: "Unlock everything for less than a coffee a month.",
       alignment: "center",
+      paddingY: "m",
     }),
     makeBlock("plans", { ctaCopy: "Upgrade now" }),
+    makeBlock("guarantee", { text: "Cancel anytime", paddingY: "s" }),
   ],
 }
 
-// ─── 10. Long-form Sales Page ─────────────────────────────────────────────────
+// ─── 10. Long-form Sales Page (max persuasion) ───────────────────────────────
 const longformSales: PaywallTemplate = {
   id: "longform-sales",
   name: "Long-form Sales Page",
@@ -335,48 +351,50 @@ const longformSales: PaywallTemplate = {
   theme: { accentColor: "#EF4444", fontFamily: "system", buttonShape: "rounded" },
   blocks: [
     makeBlock("urgency", {
-      text: "🔥 Founding member pricing — only 50 spots left",
-      type: "text",
+      text: "🔥 Founding member pricing — 50 spots left",
+      paddingY: "s",
     }),
     makeBlock("hero", {
-      eyebrow: "The #1 rated solution",
+      eyebrow: "★ The #1 rated growth system",
       headline: "Stop struggling. Start scaling.",
-      subheadline: "The proven system used by 10 000+ businesses to double revenue in 90 days.",
+      subheadline: "The proven 90-day system used by 10,000+ businesses to double their revenue.",
       alignment: "center",
+      paddingY: "l",
+      bgGradient: "linear-gradient(135deg, rgba(239,68,68,0.16), rgba(127,29,29,0.04))",
     }),
     makeBlock("stats", {
       items: [
         { value: "10K+", label: "Customers" },
-        { value: "2×",   label: "Average revenue increase" },
+        { value: "2×",   label: "Avg revenue lift" },
         { value: "90",   label: "Days to results" },
       ],
     }),
     makeBlock("features", {
       title: "Everything you need to succeed",
       items: [
-        { icon: "🎯", text: "Step-by-step playbook proven to work" },
-        { icon: "🤝", text: "1-on-1 onboarding call with our team" },
-        { icon: "📊", text: "Real-time dashboard & KPI tracking" },
-        { icon: "💬", text: "Private Slack community (5 000 members)" },
-        { icon: "📚", text: "Resource library + weekly live sessions" },
+        { icon: "🎯", text: "Step-by-step playbook proven across industries" },
+        { icon: "🤝", text: "1-on-1 onboarding call with our growth team" },
+        { icon: "📊", text: "Real-time dashboard with KPI tracking" },
+        { icon: "💬", text: "Private Slack community (5,000+ members)" },
+        { icon: "📚", text: "Weekly live sessions + complete resource library" },
       ],
     }),
     makeBlock("testimonials", {
       title: "Proof it works",
       items: [
-        { quote: "Went from $5K to $50K MRR in 4 months. This is the real deal.", author: "Marcus J.", role: "Founder, SaaS co.", avatar: null },
-        { quote: "I was skeptical at first — now I'm a true believer. Incredible ROI.", author: "Diana F.", role: "E-commerce entrepreneur", avatar: null },
+        { quote: "Went from $5K to $50K MRR in 4 months. This is the real deal.", author: "Marcus J.", role: "Founder, SaaS", avatar: null },
+        { quote: "Skeptical at first — now a true believer. Incredible ROI.", author: "Diana F.", role: "E-commerce", avatar: null },
         { quote: "The community alone is worth 10× the price.", author: "Yusuf A.", role: "Agency owner", avatar: null },
       ],
     }),
     makeBlock("plans", { ctaCopy: "Claim your spot now" }),
-    makeBlock("guarantee", { text: "60-day money-back guarantee — if you don't see results, we refund every penny" }),
+    makeBlock("guarantee", { text: "60-day money-back guarantee — if you don't see results, we refund every cent" }),
     makeBlock("faq", {
       title: "Still have questions?",
       items: [
-        { question: "Is this right for my stage?", answer: "We work with businesses from $0 to $10M ARR. If you're serious about growth, it's for you." },
-        { question: "How quickly will I see results?", answer: "Most customers report measurable results within 30 days." },
-        { question: "What if it doesn't work for me?", answer: "Full refund, no questions, within 60 days. Zero risk." },
+        { question: "Is this right for my stage?", answer: "We work with businesses from $0 to $10M ARR. If you're serious about growth, this is for you." },
+        { question: "How quickly will I see results?", answer: "Most customers report measurable lift within the first 30 days." },
+        { question: "What if it doesn't work for me?", answer: "Full refund, no questions, within 60 days. Zero risk on your end." },
       ],
     }),
   ],

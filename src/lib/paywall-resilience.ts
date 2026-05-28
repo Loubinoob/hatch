@@ -15,7 +15,22 @@ export const CRITICAL_FIELDS = [
   "cta_copy",
   "plan_ids",
   "account_id",
+  // V4 — block-based design must persist. If the DB is missing these columns,
+  // we surface a *visible* error rather than silently dropping the work.
+  "blocks",
+  "display_mode",
 ] as const
+
+/** Friendly per-field error messages shown to the founder when a save fails
+ *  because the database is missing a column. Falls back to a generic message. */
+const FIELD_ERROR_MESSAGES: Record<string, string> = {
+  blocks:
+    "Your paywall design couldn't be saved — the database is missing the 'blocks' column. " +
+    "Run migration 018 (npm run db:push) or apply it manually via the Supabase SQL editor.",
+  display_mode:
+    "Your paywall design couldn't be saved — the database is missing the 'display_mode' column. " +
+    "Run migration 018 (npm run db:push) or apply it manually via the Supabase SQL editor.",
+}
 
 /** Safe fallback values for optional/cosmetic paywall fields.
  *  Used when a column is absent from the DB row (null or missing key). */
@@ -117,11 +132,9 @@ export async function savePaywallResilient<T = unknown>(
 
     if (missingCol && missingCol in body) {
       if ((CRITICAL_FIELDS as readonly string[]).includes(missingCol)) {
-        return {
-          error: {
-            message: `Required field '${missingCol}' is missing from the database. Please run migrations.`,
-          },
-        }
+        const friendly = FIELD_ERROR_MESSAGES[missingCol]
+          ?? `Required field '${missingCol}' is missing from the database. Please run migrations.`
+        return { error: { message: friendly } }
       }
       console.warn(`[Hatch] Column '${missingCol}' not found in DB schema — dropping it and retrying`)
       dropped.push(missingCol)

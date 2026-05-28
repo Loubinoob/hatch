@@ -1,4 +1,20 @@
-import type { BlockDefinition, BlockType } from "./types"
+import type { BlockDefinition, BlockType, PropField } from "./types"
+
+// ─── Common props available on EVERY block ──────────────────────────────────
+// Stored alongside type-specific props in `block.props`. Rendered as a separate
+// "Layout & Style" section in the props editor.
+
+export const COMMON_BLOCK_PROPS: PropField[] = [
+  { key: "paddingY",       label: "Vertical padding", type: "enum", options: ["s", "m", "l"] },
+  { key: "alignment",      label: "Alignment",        type: "enum", options: ["left", "center"] },
+  { key: "bgColor",        label: "Background colour", type: "color" },
+  { key: "bgGradient",     label: "Background gradient (CSS)", type: "text", placeholder: "linear-gradient(135deg, #667eea, #764ba2)" },
+  { key: "bgImageUrl",     label: "Background image URL", type: "image_url", placeholder: "https://…" },
+  { key: "accentOverride", label: "Accent override",  type: "color" },
+  { key: "hidden",         label: "Hide block",       type: "boolean" },
+]
+
+export const COMMON_PROP_KEYS = new Set(COMMON_BLOCK_PROPS.map(p => p.key))
 
 // ─── Default props + prop schema per block type ───────────────────────────────
 
@@ -12,14 +28,12 @@ export const BLOCK_DEFINITIONS: Record<BlockType, BlockDefinition> = {
       headline:   "Unlock the full power",
       subheadline: "Join thousands of users who already leveled up.",
       alignment:  "center",
-      bgImage:    null,
+      paddingY:   "l",
     },
     propSchema: [
       { key: "eyebrow",     label: "Eyebrow label",  type: "text",    placeholder: "e.g. Limited time offer" },
       { key: "headline",    label: "Headline",        type: "textarea" },
       { key: "subheadline", label: "Subheadline",     type: "textarea" },
-      { key: "alignment",   label: "Alignment",       type: "enum", options: ["left", "center"] },
-      { key: "bgImage",     label: "Background image (URL)", type: "image_url" },
     ],
   },
 

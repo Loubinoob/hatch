@@ -7,7 +7,7 @@ import {
   Loader2, Eye, Smartphone, Monitor, Tablet, Save, Zap, ChevronLeft,
   Sparkles, RefreshCw, Check, BookOpen, Copy, AlertCircle, Brain,
   Archive, BarChart2, Clock, Activity, Lightbulb, Plus, Trash2, Globe, Code2,
-  GripVertical, Layers, X, Layout, Wand2, ChevronDown, ChevronUp,
+  GripVertical, Layers, X, Layout, Wand2, ChevronDown, ChevronUp, EyeOff,
 } from "lucide-react"
 import Link from "next/link"
 import { toast } from "sonner"
@@ -15,10 +15,10 @@ import PaywallPreview from "@/components/paywall/PaywallPreview"
 import BlocksPreview from "@/components/blocks/BlocksPreview"
 import { getSdkScriptUrl } from "@/lib/sdk-url"
 import { withDefaults, savePaywallResilient } from "@/lib/paywall-resilience"
-import { BLOCK_DEFINITIONS, BLOCK_PICKER_ORDER } from "@/lib/blocks/definitions"
+import { BLOCK_DEFINITIONS, BLOCK_PICKER_ORDER, COMMON_BLOCK_PROPS } from "@/lib/blocks/definitions"
 import { PAYWALL_TEMPLATES } from "@/lib/blocks/templates"
 import { makeBlock } from "@/lib/blocks/utils"
-import type { Block, BlockType } from "@/lib/blocks/types"
+import type { Block, BlockType, PropField } from "@/lib/blocks/types"
 import {
   DndContext, closestCenter, PointerSensor, useSensor, useSensors,
   type DragEndEvent,
@@ -176,28 +176,137 @@ const DEFAULT_TRIGGER_CONFIG = {
   cooldown_hours: 24,
 }
 
+// ── Single prop field editor (handles all PropFieldType values) ──────────────
+function PropFieldEditor({
+  field, value, onChange, onUpload, uploading,
+}: {
+  field: PropField
+  value: unknown
+  onChange: (v: unknown) => void
+  onUpload?: (file: File) => Promise<void>
+  uploading?: boolean
+}) {
+  return (
+    <div>
+      <label className="text-[10px] text-[#71717A] mb-1 block font-medium">{field.label}</label>
+      {field.type === "textarea" ? (
+        <textarea
+          value={String(value ?? "")}
+          onChange={e => onChange(e.target.value)}
+          rows={2}
+          placeholder={field.placeholder}
+          className="hatch-input resize-none text-xs"
+        />
+      ) : field.type === "enum" ? (
+        <div className="flex gap-1 flex-wrap">
+          {(field.options ?? []).map(opt => (
+            <button key={opt} onClick={() => onChange(opt)}
+              className={`px-2 py-1 text-[10px] rounded-lg border capitalize transition-all ${value === opt ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-400" : "border-white/6 bg-white/3 text-[#71717A] hover:text-[#A1A1AA]"}`}
+            >{opt}</button>
+          ))}
+        </div>
+      ) : field.type === "boolean" ? (
+        <button
+          onClick={() => onChange(!value)}
+          className={`w-9 h-5 rounded-full transition-colors relative ${value ? "bg-indigo-600" : "bg-white/10"}`}
+        >
+          <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${value ? "translate-x-4.5" : "translate-x-0.5"}`} />
+        </button>
+      ) : field.type === "number" ? (
+        <input
+          type="number"
+          value={Number(value ?? 0)}
+          onChange={e => onChange(Number(e.target.value))}
+          className="hatch-input text-xs"
+        />
+      ) : field.type === "color" ? (
+        <div className="flex gap-1.5 items-center">
+          <input
+            type="color"
+            value={String(value ?? "#000000")}
+            onChange={e => onChange(e.target.value)}
+            className="w-7 h-7 rounded border border-white/10 bg-transparent cursor-pointer"
+          />
+          <input
+            type="text"
+            value={String(value ?? "")}
+            onChange={e => onChange(e.target.value)}
+            placeholder="#000000"
+            className="hatch-input text-xs flex-1"
+          />
+          {value != null && value !== "" && (
+            <button onClick={() => onChange(null)} className="text-[#52525B] hover:text-red-400 px-1 text-xs">×</button>
+          )}
+        </div>
+      ) : field.type === "image_url" ? (
+        <div className="space-y-1.5">
+          <input
+            type="text"
+            value={String(value ?? "")}
+            onChange={e => onChange(e.target.value)}
+            placeholder={field.placeholder ?? "https://…"}
+            className="hatch-input text-xs"
+          />
+          {onUpload && (
+            <label className="flex items-center justify-center gap-1.5 cursor-pointer py-1.5 rounded-lg bg-white/4 border border-white/8 border-dashed hover:bg-white/6 transition-colors text-[10px] text-[#A1A1AA]">
+              {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+              {uploading ? "Uploading…" : "Upload image"}
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                className="hidden"
+                onChange={async e => {
+                  const file = e.target.files?.[0]
+                  if (file) { await onUpload(file); e.target.value = "" }
+                }}
+              />
+            </label>
+          )}
+          {!!value && typeof value === "string" && (
+            <div className="rounded-lg overflow-hidden border border-white/10 bg-white/2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={value} alt="" className="w-full h-16 object-cover" />
+            </div>
+          )}
+        </div>
+      ) : (
+        <input
+          type="text"
+          value={String(value ?? "")}
+          onChange={e => onChange(e.target.value)}
+          placeholder={field.placeholder}
+          className="hatch-input text-xs"
+        />
+      )}
+    </div>
+  )
+}
+
 // ── Sortable block row in the canvas ──────────────────────────────────────────
 function SortableBlockItem({
-  block, isSelected, onSelect, onDelete,
+  block, isSelected, onSelect, onDelete, onDuplicate, onToggleHide,
 }: {
   block: Block
   isSelected: boolean
   onSelect: (id: string) => void
   onDelete: (id: string) => void
+  onDuplicate: (id: string) => void
+  onToggleHide: (id: string) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: block.id })
   const def = BLOCK_DEFINITIONS[block.type]
+  const hidden = (block.props as Record<string, unknown>).hidden === true
   return (
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
       onClick={() => onSelect(block.id)}
-      className={`flex items-center gap-2 px-2.5 py-2 rounded-lg border cursor-pointer transition-all group ${
+      className={`flex items-center gap-1.5 px-2 py-2 rounded-lg border cursor-pointer transition-all group ${
         isSelected
           ? "border-indigo-500/50 bg-indigo-500/8"
           : "border-white/6 bg-white/2 hover:border-white/12 hover:bg-white/4"
-      }`}
+      } ${hidden ? "opacity-50" : ""}`}
     >
       <button
         {...attributes}
@@ -208,15 +317,32 @@ function SortableBlockItem({
         <GripVertical className="w-3.5 h-3.5" />
       </button>
       <span className="text-sm flex-shrink-0">{def.icon}</span>
-      <span className={`text-[11px] font-medium flex-1 truncate ${isSelected ? "text-indigo-300" : "text-[#A1A1AA]"}`}>
+      <span className={`text-[11px] font-medium flex-1 truncate ${isSelected ? "text-indigo-300" : hidden ? "text-[#52525B] line-through" : "text-[#A1A1AA]"}`}>
         {def.label}
       </span>
-      <button
-        onClick={e => { e.stopPropagation(); onDelete(block.id) }}
-        className="opacity-0 group-hover:opacity-100 text-[#52525B] hover:text-red-400 transition-all flex-shrink-0"
-      >
-        <X className="w-3 h-3" />
-      </button>
+      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          onClick={e => { e.stopPropagation(); onToggleHide(block.id) }}
+          title={hidden ? "Show" : "Hide"}
+          className="p-0.5 text-[#52525B] hover:text-[#A1A1AA] transition-colors"
+        >
+          {hidden ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+        </button>
+        <button
+          onClick={e => { e.stopPropagation(); onDuplicate(block.id) }}
+          title="Duplicate"
+          className="p-0.5 text-[#52525B] hover:text-indigo-400 transition-colors"
+        >
+          <Copy className="w-3 h-3" />
+        </button>
+        <button
+          onClick={e => { e.stopPropagation(); onDelete(block.id) }}
+          title="Delete"
+          className="p-0.5 text-[#52525B] hover:text-red-400 transition-colors"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      </div>
     </div>
   )
 }
@@ -266,6 +392,9 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   const [showTemplatePicker, setShowTemplatePicker] = useState(false)
   const [themeExpanded, setThemeExpanded] = useState(false)
   const [generatingPaywall, setGeneratingPaywall] = useState(false)
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "dirty" | "error">("idle")
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null)
+  const [previewDevice, setPreviewDevice] = useState<"mobile" | "desktop">("desktop")
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
 
   // Quiz state
@@ -477,6 +606,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
 
   function update<K extends keyof PaywallConfig>(key: K, value: PaywallConfig[K]) {
     setForm(f => ({ ...f, [key]: value }))
+    setSaveState("dirty")
   }
 
   function updateTrigger(key: string, value: unknown) {
@@ -522,6 +652,59 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   function deleteBlock(blockId: string) {
     update("blocks", (form.blocks ?? []).filter(b => b.id !== blockId))
     if (selectedBlockId === blockId) setSelectedBlockId(null)
+  }
+
+  function duplicateBlock(blockId: string) {
+    const blocks = form.blocks ?? []
+    const idx = blocks.findIndex(b => b.id === blockId)
+    if (idx === -1) return
+    const original = blocks[idx]
+    const clone: Block = {
+      ...original,
+      id: Math.random().toString(36).slice(2, 10) + Date.now().toString(36),
+      props: { ...original.props },
+    }
+    const next = [...blocks.slice(0, idx + 1), clone, ...blocks.slice(idx + 1)]
+    update("blocks", next)
+    setSelectedBlockId(clone.id)
+  }
+
+  function toggleBlockHidden(blockId: string) {
+    const blocks = form.blocks ?? []
+    const block = blocks.find(b => b.id === blockId)
+    if (!block) return
+    const current = (block.props as Record<string, unknown>).hidden === true
+    updateBlockProp(blockId, "hidden", !current)
+  }
+
+  // Image upload helper for block props
+  const [uploadingField, setUploadingField] = useState<string | null>(null)
+  async function uploadBlockImage(blockId: string, propKey: string, file: File) {
+    setUploadingField(`${blockId}.${propKey}`)
+    try {
+      const ext = file.name.split(".").pop() ?? "png"
+      const path = `${id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
+      const { error: uploadErr } = await supabase.storage
+        .from("paywall-assets")
+        .upload(path, file, { contentType: file.type, upsert: false })
+      if (uploadErr) {
+        if (uploadErr.message?.includes("Bucket not found") || uploadErr.message?.includes("does not exist")) {
+          toast.error("Storage bucket 'paywall-assets' is missing — run migration 019 first.", { duration: 8000 })
+        } else {
+          toast.error(`Upload failed: ${uploadErr.message}`)
+        }
+        return
+      }
+      const { data: pub } = supabase.storage.from("paywall-assets").getPublicUrl(path)
+      if (pub?.publicUrl) {
+        updateBlockProp(blockId, propKey, pub.publicUrl)
+        toast.success("Image uploaded")
+      }
+    } catch (err) {
+      toast.error("Upload error: " + (err instanceof Error ? err.message : "unknown"))
+    } finally {
+      setUploadingField(null)
+    }
   }
 
   function updateBlockProp(blockId: string, propKey: string, value: unknown) {
@@ -579,12 +762,17 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
 
   async function handleSave() {
     setSaving(true)
+    setSaveState("saving")
     const payload = { ...form, updated_at: new Date().toISOString() }
     const result = await savePaywallResilient(supabase, id, payload as Record<string, unknown>)
 
     if (result.error) {
-      toast.error(result.error.message)
+      // Critical save error (e.g. missing blocks/display_mode column). Show a
+      // persistent red toast so the founder can't miss it and the work isn't
+      // silently lost.
+      toast.error(result.error.message, { duration: 10000 })
       setSaving(false)
+      setSaveState("error")
       return
     }
 
@@ -597,11 +785,15 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     }).eq("paywall_id", id).eq("is_control", true)
 
     if (result.droppedFields.length > 0) {
-      toast.success(`Saved — some display settings used defaults (${result.droppedFields.join(", ")})`)
+      // If we dropped any cosmetic columns, warn (some settings may have been
+      // silently substituted with defaults).
+      toast.warning(`Saved — but some display settings used defaults (${result.droppedFields.join(", ")})`)
     } else {
       toast.success("Saved")
     }
     setSaving(false)
+    setSaveState("saved")
+    setLastSavedAt(Date.now())
   }
 
   async function generateAiCopy() {
@@ -871,6 +1063,8 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                             isSelected={selectedBlockId === block.id}
                             onSelect={id => setSelectedBlockId(prev => prev === id ? null : id)}
                             onDelete={deleteBlock}
+                            onDuplicate={duplicateBlock}
+                            onToggleHide={toggleBlockHidden}
                           />
                         ))}
                       </div>
@@ -1881,16 +2075,31 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
       {/* Center — Preview */}
       <div className="flex-1 flex flex-col bg-[#0A0A0B] overflow-hidden">
         {/* Viewport toolbar */}
-        <div className="flex items-center justify-center gap-2 py-3 border-b border-white/6">
+        <div className="flex items-center justify-center gap-2 py-3 border-b border-white/6 relative">
           {VIEWPORTS.map(({ key, icon: Icon }) => (
             <button
               key={key}
-              onClick={() => setViewport(key)}
+              onClick={() => { setViewport(key); setPreviewDevice(key === "mobile" ? "mobile" : "desktop") }}
               className={`p-2 rounded-lg transition-colors ${viewport === key ? "bg-white/8 text-white" : "text-[#52525B] hover:text-[#A1A1AA]"}`}
             >
               <Icon className="w-4 h-4" />
             </button>
           ))}
+          {/* Save state indicator */}
+          <div className="absolute right-4 flex items-center gap-1.5 text-[10px]">
+            {saveState === "saving" && (
+              <><Loader2 className="w-3 h-3 animate-spin text-indigo-400" /><span className="text-[#71717A]">Saving…</span></>
+            )}
+            {saveState === "saved" && lastSavedAt && (
+              <><Check className="w-3 h-3 text-emerald-400" /><span className="text-[#71717A]">Saved</span></>
+            )}
+            {saveState === "dirty" && (
+              <><div className="w-1.5 h-1.5 rounded-full bg-amber-400" /><span className="text-amber-400">Unsaved changes</span></>
+            )}
+            {saveState === "error" && (
+              <><AlertCircle className="w-3 h-3 text-red-400" /><span className="text-red-400">Save error</span></>
+            )}
+          </div>
         </div>
 
         {/* Preview area */}
@@ -1918,8 +2127,11 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                     accentColor,
                     fontFamily: form.font_family ?? "system",
                     buttonShape: form.button_shape ?? "rounded",
+                    overlayOpacity: form.overlay_opacity ?? 65,
                   }}
                   displayMode={form.display_mode ?? "modal"}
+                  device={previewDevice}
+                  highlightId={selectedBlockId}
                 />
               ) : (
                 <PaywallPreview
@@ -1949,54 +2161,39 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                   <X className="w-3.5 h-3.5" />
                 </button>
               </div>
-              <div className="p-3 space-y-3">
-                {def.propSchema.map(field => {
-                  const val = (block.props as Record<string, unknown>)[field.key]
-                  return (
-                    <div key={field.key}>
-                      <label className="text-[10px] text-[#71717A] mb-1 block font-medium">{field.label}</label>
-                      {field.type === "textarea" ? (
-                        <textarea
-                          value={String(val ?? "")}
-                          onChange={e => updateBlockProp(block.id, field.key, e.target.value)}
-                          rows={2}
-                          placeholder={field.placeholder}
-                          className="hatch-input resize-none text-xs"
-                        />
-                      ) : field.type === "enum" ? (
-                        <div className="flex gap-1 flex-wrap">
-                          {(field.options ?? []).map(opt => (
-                            <button key={opt} onClick={() => updateBlockProp(block.id, field.key, opt)}
-                              className={`px-2 py-1 text-[10px] rounded-lg border capitalize transition-all ${val === opt ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-400" : "border-white/6 bg-white/3 text-[#71717A] hover:text-[#A1A1AA]"}`}
-                            >{opt}</button>
-                          ))}
-                        </div>
-                      ) : field.type === "boolean" ? (
-                        <button
-                          onClick={() => updateBlockProp(block.id, field.key, !val)}
-                          className={`w-9 h-5 rounded-full transition-colors relative ${val ? "bg-indigo-600" : "bg-white/10"}`}
-                        >
-                          <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-transform ${val ? "translate-x-4.5" : "translate-x-0.5"}`} />
-                        </button>
-                      ) : field.type === "number" ? (
-                        <input
-                          type="number"
-                          value={Number(val ?? 0)}
-                          onChange={e => updateBlockProp(block.id, field.key, Number(e.target.value))}
-                          className="hatch-input text-xs"
-                        />
-                      ) : (
-                        <input
-                          type="text"
-                          value={String(val ?? "")}
-                          onChange={e => updateBlockProp(block.id, field.key, e.target.value)}
-                          placeholder={field.placeholder}
-                          className="hatch-input text-xs"
-                        />
-                      )}
-                    </div>
-                  )
-                })}
+              <div className="p-3 space-y-4">
+                {/* Type-specific fields */}
+                <div className="space-y-3">
+                  {def.propSchema.map(field => (
+                    <PropFieldEditor
+                      key={field.key}
+                      field={field}
+                      value={(block.props as Record<string, unknown>)[field.key]}
+                      onChange={v => updateBlockProp(block.id, field.key, v)}
+                      onUpload={field.type === "image_url" ? f => uploadBlockImage(block.id, field.key, f) : undefined}
+                      uploading={uploadingField === `${block.id}.${field.key}`}
+                    />
+                  ))}
+                </div>
+
+                {/* Common layout/style fields */}
+                <details className="border border-white/6 rounded-lg overflow-hidden" open={false}>
+                  <summary className="px-2.5 py-2 cursor-pointer text-[10px] font-semibold text-[#A1A1AA] uppercase tracking-wide bg-white/2 hover:bg-white/4 transition-colors">
+                    Layout &amp; Style
+                  </summary>
+                  <div className="p-2.5 space-y-3">
+                    {COMMON_BLOCK_PROPS.map(field => (
+                      <PropFieldEditor
+                        key={field.key}
+                        field={field}
+                        value={(block.props as Record<string, unknown>)[field.key]}
+                        onChange={v => updateBlockProp(block.id, field.key, v)}
+                        onUpload={field.type === "image_url" ? f => uploadBlockImage(block.id, field.key, f) : undefined}
+                        uploading={uploadingField === `${block.id}.${field.key}`}
+                      />
+                    ))}
+                  </div>
+                </details>
               </div>
             </div>
           )
