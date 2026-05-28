@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hatch — Block Paywall E2E Test</title>
+  <style>
+    * { box-sizing: border-box }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #fff;
+      margin: 0; padding: 40px 24px;
+      min-height: 100vh;
+    }
+    .container { max-width: 720px; margin: 0 auto }
+    h1 { font-size: 24px; margin: 0 0 8px }
+    p.muted { color: rgba(255,255,255,0.6); margin: 0 0 24px; font-size: 14px }
+    .card {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    label { display: block; font-size: 12px; color: rgba(255,255,255,0.7); margin-bottom: 6px; font-weight: 500 }
+    input {
+      width: 100%; padding: 10px 12px; font-size: 14px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 8px; color: #fff; font-family: inherit;
+    }
+    input:focus { outline: none; border-color: #6366F1 }
+    button {
+      background: #6366F1; border: none; color: #fff; padding: 10px 18px;
+      border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;
+      font-family: inherit; margin-top: 12px; margin-right: 8px;
+    }
+    button:hover { background: #4F46E5 }
+    pre {
+      background: rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 8px;
+      padding: 14px;
+      overflow: auto;
+      max-height: 320px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #A78BFA;
+    }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px }
+    .badge {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600;
+      background: rgba(99,102,241,0.15); color: #A5B4FC; margin-right: 6px;
+    }
+    .ok { background: rgba(16,185,129,0.15); color: #34D399 }
+    .err { background: rgba(239,68,68,0.15); color: #F87171 }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Hatch — Block Paywall E2E Test</h1>
+    <p class="muted">Use this page to verify the builder → /api/sdk/config → SDK loop.</p>
+
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>API key (data-key)</label>
+          <input id="api-key" placeholder="pk_…" />
+        </div>
+        <div>
+          <label>Paywall ID</label>
+          <input id="paywall-id" placeholder="pwl_…" />
+        </div>
+      </div>
+      <button id="btn-fetch">1. Fetch /api/sdk/config</button>
+      <button id="btn-show">2. Show paywall via SDK</button>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 10px;font-size:14px">Verification checklist</h3>
+      <div id="checks" style="font-size:12px;line-height:2"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 10px;font-size:14px">API response</h3>
+      <pre id="output">(click "Fetch" first)</pre>
+    </div>
+  </div>
+
+  <script>
+    // Load SDK
+    var apiKeyInput = document.getElementById('api-key')
+    var paywallIdInput = document.getElementById('paywall-id')
+    var output = document.getElementById('output')
+    var checks = document.getElementById('checks')
+
+    // Pre-fill from localStorage for convenience
+    apiKeyInput.value     = localStorage.getItem('hatch_test_key')      || ''
+    paywallIdInput.value  = localStorage.getItem('hatch_test_paywall')  || ''
+
+    function setChecks(list) {
+      checks.innerHTML = list.map(function(c) {
+        return '<div><span class="badge ' + (c.ok ? 'ok' : 'err') + '">' + (c.ok ? '✓' : '✗') + '</span>' + c.label + '</div>'
+      }).join('')
+    }
+
+    document.getElementById('btn-fetch').onclick = async function() {
+      var key = apiKeyInput.value.trim()
+      var pid = paywallIdInput.value.trim()
+      if (!key || !pid) { alert('Enter API key + paywall ID'); return }
+      localStorage.setItem('hatch_test_key', key)
+      localStorage.setItem('hatch_test_paywall', pid)
+
+      output.textContent = 'Fetching…'
+      var url = '/api/sdk/config?key=' + encodeURIComponent(key) + '&paywall=' + encodeURIComponent(pid) + '&session=test_' + Date.now()
+      var res = await fetch(url)
+      var data = await res.json()
+      output.textContent = JSON.stringify(data, null, 2)
+
+      var pw = data.paywall
+      var list = [
+        { ok: !!pw,                                                label: 'Response.paywall exists' },
+        { ok: pw && Array.isArray(pw.blocks),                      label: 'paywall.blocks is an array' },
+        { ok: pw && pw.blocks && pw.blocks.length > 0,             label: 'paywall.blocks has at least 1 block' },
+        { ok: pw && (pw.display_mode === 'modal' || pw.display_mode === 'fullscreen'), label: 'paywall.display_mode = "modal" or "fullscreen"' },
+        { ok: pw && pw.theme && typeof pw.theme.accentColor === 'string', label: 'paywall.theme.accentColor present' },
+        { ok: pw && Array.isArray(pw.plans) && pw.plans.length > 0, label: 'paywall.plans has at least 1 plan with prices' },
+        { ok: pw && pw.plans && pw.plans.every(function(p){ return typeof p.price_monthly === 'number' }), label: 'every plan has a numeric price_monthly' },
+      ]
+      setChecks(list)
+    }
+
+    document.getElementById('btn-show').onclick = function() {
+      var key = apiKeyInput.value.trim()
+      var pid = paywallIdInput.value.trim()
+      if (!key || !pid) { alert('Enter API key + paywall ID'); return }
+
+      // Inject SDK if not present
+      if (!window.hatch) {
+        var s = document.createElement('script')
+        s.src  = '/sdk/sdk.js'
+        s.setAttribute('data-key', key)
+        s.onload = function() { setTimeout(function() { window.hatch.show(pid) }, 200) }
+        document.head.appendChild(s)
+      } else {
+        window.hatch.show(pid)
+      }
+    }
+  </script>
+</body>
+</html>

@@ -7,6 +7,7 @@ import { selectPriceCandidate, selectPriceWithDemandModel } from "@/lib/price-ba
 import { betaSample } from "@/lib/sampling"
 import { loadEffectiveDemandModel } from "@/lib/demand-model"
 import { loadChoiceModel, findBestPriceVector, CHOICE_MODEL_MIN_OBS } from "@/lib/choice-model"
+import { legacyToBlocks } from "@/lib/blocks/utils"
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -26,6 +27,48 @@ function hashFP(s: string): string {
 }
 
 const SEGMENT_CONFIDENCE_THRESHOLD = 10
+
+/**
+ * Ensures a paywall always ships with a populated `blocks[]` array so the SDK
+ * can always use the block renderer (no separate legacy code path).
+ *
+ * - If `blocks` is missing/empty (DB column absent, never migrated, or legacy
+ *   paywall created before V4) → auto-generate `[hero, urgency?, plans,
+ *   guarantee?, footer]` from the legacy headline/subheadline/cta_copy fields.
+ * - `display_mode` defaults to "modal".
+ * - A clean `theme` object is also attached so the SDK + render layer can
+ *   consume it consistently (chameleon detection on the client still applies).
+ *
+ * Resilient: never throws — if anything goes wrong, returns the paywall as-is.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function ensureBlocksAndTheme(paywall: any): any {
+  if (!paywall) return paywall
+  try {
+    const rawBlocks = paywall.blocks
+    const hasBlocks = Array.isArray(rawBlocks) && rawBlocks.length > 0
+    const blocks = hasBlocks ? rawBlocks : legacyToBlocks({
+      headline:       paywall.headline       ?? null,
+      subheadline:    paywall.subheadline    ?? null,
+      cta_copy:       paywall.cta_copy       ?? null,
+      guarantee_text: paywall.guarantee_text ?? null,
+      urgency_text:   paywall.urgency_text   ?? null,
+    })
+    const display_mode = paywall.display_mode === "fullscreen" ? "fullscreen" : "modal"
+    const design = (paywall.design ?? {}) as Record<string, unknown>
+    const theme = {
+      accentColor:    (design.accentColor    as string) ?? "#6366F1",
+      fontFamily:     paywall.font_family     ?? "system",
+      buttonShape:    paywall.button_shape    ?? "rounded",
+      overlayOpacity: paywall.overlay_opacity ?? 65,
+      animationStyle: paywall.animation_style ?? "slide",
+    }
+    return { ...paywall, blocks, display_mode, theme }
+  } catch (err) {
+    console.warn("[sdk/config] ensureBlocksAndTheme failed:", err)
+    return paywall
+  }
+}
 
 type Variant = {
   id: string
@@ -419,10 +462,14 @@ export async function GET(request: NextRequest) {
     const enriched = await applyVariantContextual(
       supabase, base, sessionId, user.account_id, segmentHash, segmentFeatures, effectiveUserKey, allPlanPrices
     )
+    // Backwards-compat: legacy paywalls without blocks get an auto-generated
+    // [hero, urgency?, plans, guarantee?, footer] sequence so the SDK always
+    // has blocks to render.
+    const ready = ensureBlocksAndTheme(enriched)
 
     return NextResponse.json(
       {
-        paywall: enriched,
+        paywall: ready,
         quiz: quiz?.trigger_mode !== "disabled" ? quiz : null,
         segment_hash: segmentHash,
       },
@@ -471,7 +518,9 @@ export async function GET(request: NextRequest) {
   const enrichedFirst = await applyVariantContextual(
     supabase, firstWithPricing, sessionId, user.account_id, segmentHash, segmentFeatures, effectiveUserKey, allPlanPrices
   )
-  const result = [enrichedFirst, ...paywallsWithPlans.slice(1)]
+  // Ensure every paywall in the list has blocks + display_mode + theme — even
+  // legacy ones that pre-date the V4 block system.
+  const result = [enrichedFirst, ...paywallsWithPlans.slice(1)].map(ensureBlocksAndTheme)
 
   return NextResponse.json(
     { paywalls: result, segment_hash: segmentHash },
