@@ -391,6 +391,10 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null)
   const [showBlockPicker, setShowBlockPicker] = useState(false)
   const [showTemplatePicker, setShowTemplatePicker] = useState(false)
+  const [showAiSiteModal, setShowAiSiteModal] = useState(false)
+  const [aiSiteUrl, setAiSiteUrl] = useState("")
+  const [aiSiteBusy, setAiSiteBusy] = useState(false)
+  const [aiSiteBrand, setAiSiteBrand] = useState<{ name?: string; colorScheme?: string; accentColor?: string; summary?: string } | null>(null)
   const [themeExpanded, setThemeExpanded] = useState(false)
   const [generatingPaywall, setGeneratingPaywall] = useState(false)
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "dirty" | "error">("idle")
@@ -761,6 +765,42 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     finally { setGeneratingPaywall(false) }
   }
 
+  // Analyze the host app's site and generate a fully on-brand paywall.
+  async function generateFromSite() {
+    const target = aiSiteUrl.trim()
+    if (!target) { toast.error("Entre l'URL de ton app"); return }
+    setAiSiteBusy(true)
+    setAiSiteBrand(null)
+    try {
+      const res = await fetch("/api/ai/generate-from-site", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paywall_id: id, url: target }),
+      })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error ?? "Génération échouée"); return }
+
+      const th = (data.theme ?? {}) as Record<string, string>
+      const nd: Record<string, string> = { ...((form.design ?? {}) as Record<string, string>) }
+      if (th.accentColor) nd.accentColor = th.accentColor
+      if (th.colorScheme) nd.colorScheme = th.colorScheme
+      if (th.background) nd.background = th.background; else delete nd.background
+      if (th.backgroundGradient) nd.backgroundGradient = th.backgroundGradient; else delete nd.backgroundGradient
+      if (th.surface) nd.surface = th.surface; else delete nd.surface
+      update("design", nd)
+      if (th.fontFamily) update("font_family", th.fontFamily as "system" | "serif" | "mono")
+      if (th.buttonShape) update("button_shape", th.buttonShape as "rounded" | "pill" | "square")
+      update("theme_mode", "manual")
+      update("blocks", data.blocks ?? [])
+      update("display_mode", data.display_mode ?? "modal")
+      setSelectedBlockId(null)
+      setAiSiteBrand(data.brand ?? null)
+      toast.success(`✨ Paywall calé sur ${data.brand?.name ?? "ta marque"} — ${data.blocks?.length ?? 0} blocs`)
+      if (data.reasoning) toast.info(data.reasoning, { duration: 6000 })
+    } catch { toast.error("Échec de la génération depuis le site") }
+    finally { setAiSiteBusy(false) }
+  }
+
   async function handleSave() {
     setSaving(true)
     setSaveState("saving")
@@ -1039,12 +1079,11 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                   Templates
                 </button>
                 <button
-                  onClick={generateAiPaywall}
-                  disabled={generatingPaywall || !briefCompleted}
-                  title={!briefCompleted ? "Complete Project Brief first" : "Generate paywall with AI"}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600/15 border border-indigo-500/25 hover:bg-indigo-600/25 text-[10px] text-indigo-400 hover:text-indigo-300 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  onClick={() => setShowAiSiteModal(true)}
+                  title="Générer un paywall calé sur ta marque, par l'IA"
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600/15 border border-indigo-500/25 hover:bg-indigo-600/25 text-[10px] text-indigo-400 hover:text-indigo-300 transition-all"
                 >
-                  {generatingPaywall ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                  {(generatingPaywall || aiSiteBusy) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
                   AI
                 </button>
               </div>
@@ -2401,6 +2440,75 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                   </div>
                 </button>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── AI: generate an on-brand paywall from the host app ──────────────── */}
+      {showAiSiteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-6">
+          <div className="bg-[#111116] border border-white/10 rounded-2xl w-full max-w-md flex flex-col overflow-hidden shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
+              <div className="flex items-center gap-2">
+                <Wand2 className="w-4 h-4 text-indigo-400" />
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Générer depuis ton app</h3>
+                  <p className="text-[11px] text-[#71717A] mt-0.5">L&apos;IA analyse ton site et crée un paywall à ta marque</p>
+                </div>
+              </div>
+              <button onClick={() => setShowAiSiteModal(false)} className="w-7 h-7 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-[#71717A] hover:text-white transition-colors">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="text-[10px] text-[#71717A] mb-1.5 block font-medium uppercase tracking-wide">URL de ton app / landing</label>
+                <input
+                  value={aiSiteUrl}
+                  onChange={e => setAiSiteUrl(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && !aiSiteBusy) generateFromSite() }}
+                  placeholder="https://mon-app.com"
+                  className="hatch-input"
+                  autoFocus
+                />
+                <p className="text-[10px] text-[#52525B] mt-1.5">Couleurs, polices, arrondis, clair/sombre et logo sont détectés puis assimilés.</p>
+              </div>
+
+              <button
+                onClick={generateFromSite}
+                disabled={aiSiteBusy || !aiSiteUrl.trim()}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {aiSiteBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+                {aiSiteBusy ? "Analyse & génération…" : "Analyser & générer"}
+              </button>
+
+              {aiSiteBrand && (
+                <div className="rounded-xl border border-white/8 bg-white/3 p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-4 h-4 rounded-full border border-white/20" style={{ background: aiSiteBrand.accentColor ?? "#6366F1" }} />
+                    <span className="text-[12px] font-semibold text-white">{aiSiteBrand.name ?? "Marque détectée"}</span>
+                    {aiSiteBrand.colorScheme && (
+                      <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded bg-white/8 text-[#A1A1AA] capitalize">{aiSiteBrand.colorScheme}</span>
+                    )}
+                  </div>
+                  {aiSiteBrand.summary && <p className="text-[10px] text-[#71717A] leading-snug">{aiSiteBrand.summary}</p>}
+                  <p className="text-[10px] text-emerald-400">✓ Appliqué à l&apos;aperçu — ferme pour ajuster.</p>
+                </div>
+              )}
+
+              <div className="pt-1 border-t border-white/6">
+                <button
+                  onClick={() => { setShowAiSiteModal(false); generateAiPaywall() }}
+                  disabled={!briefCompleted}
+                  title={!briefCompleted ? "Complète le Project Brief d'abord" : "Générer depuis le brief produit"}
+                  className="w-full mt-3 text-[11px] text-[#71717A] hover:text-indigo-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  ou générer depuis le Project Brief →
+                </button>
+              </div>
             </div>
           </div>
         </div>
