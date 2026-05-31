@@ -18,7 +18,8 @@ import { withDefaults, savePaywallResilient } from "@/lib/paywall-resilience"
 import { BLOCK_DEFINITIONS, BLOCK_PICKER_ORDER, COMMON_BLOCK_PROPS } from "@/lib/blocks/definitions"
 import { PAYWALL_TEMPLATES } from "@/lib/blocks/templates"
 import { makeBlock } from "@/lib/blocks/utils"
-import type { Block, BlockType, PropField } from "@/lib/blocks/types"
+import { THEME_PRESETS, BACKGROUND_PRESETS, resolveTheme } from "@/lib/blocks/theme"
+import type { Block, BlockType, PropField, ColorScheme } from "@/lib/blocks/types"
 import {
   DndContext, closestCenter, PointerSensor, useSensor, useSensors,
   type DragEndEvent,
@@ -926,6 +927,21 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   const locs = form.localizations ?? {}
   const accentColor = (form.design as Record<string, string>)?.accentColor ?? "#6366F1"
 
+  // Full theme passed to the renderer — extended aesthetics live in the `design` JSON.
+  const designJson = (form.design ?? {}) as Record<string, string>
+  const previewTheme = {
+    accentColor,
+    fontFamily: form.font_family ?? "system",
+    buttonShape: form.button_shape ?? "rounded",
+    overlayOpacity: form.overlay_opacity ?? 65,
+    colorScheme: (designJson.colorScheme as ColorScheme) ?? "dark",
+    background: designJson.background || undefined,
+    backgroundGradient: designJson.backgroundGradient || undefined,
+    surface: designJson.surface || undefined,
+    textColor: designJson.textColor || undefined,
+  }
+  const previewStageBg = resolveTheme(previewTheme)
+
   // Open a full-page preview in a new tab. We stash the current (possibly unsaved)
   // builder state to localStorage so the preview reflects live edits even if the
   // last DB save dropped columns; the preview page falls back to the DB otherwise.
@@ -938,12 +954,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
         name: form.name ?? "Paywall",
         blocks: form.blocks ?? [],
         plans: previewPlans,
-        theme: {
-          accentColor,
-          fontFamily: form.font_family ?? "system",
-          buttonShape: form.button_shape ?? "rounded",
-          overlayOpacity: form.overlay_opacity ?? 65,
-        },
+        theme: previewTheme,
         displayMode: form.display_mode ?? "modal",
         config: form,
       }
@@ -1132,6 +1143,77 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                     </div>
 
                     <div className={`space-y-4 ${(form.theme_mode ?? "auto") === "auto" ? "opacity-40 pointer-events-none" : ""}`}>
+                      {/* Look presets */}
+                      <div>
+                        <label className="text-[10px] text-[#71717A] mb-1.5 block font-medium">Look</label>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {THEME_PRESETS.map(preset => {
+                            const d = (form.design ?? {}) as Record<string, string>
+                            const active = (d.colorScheme ?? "dark") === preset.scheme && d.accentColor === preset.theme.accentColor
+                            return (
+                              <button
+                                key={preset.id}
+                                title={preset.name}
+                                onClick={() => {
+                                  const nd: Record<string, string> = { ...((form.design ?? {}) as Record<string, string>) }
+                                  nd.colorScheme = preset.theme.colorScheme as string
+                                  nd.accentColor = preset.theme.accentColor as string
+                                  if (preset.theme.background != null) nd.background = preset.theme.background; else delete nd.background
+                                  if (preset.theme.backgroundGradient != null) nd.backgroundGradient = preset.theme.backgroundGradient; else delete nd.backgroundGradient
+                                  update("design", nd)
+                                  if (preset.theme.fontFamily) update("font_family", preset.theme.fontFamily)
+                                  if (preset.theme.buttonShape) update("button_shape", preset.theme.buttonShape)
+                                }}
+                                className={`flex flex-col items-center gap-1 py-2 rounded-lg border transition-all ${active ? "border-indigo-500/60 bg-indigo-500/10" : "border-white/6 bg-white/3 hover:bg-white/6"}`}
+                              >
+                                <span className="w-5 h-5 rounded-full border border-white/20" style={{ background: preset.scheme === "light" ? "#fff" : "#111", boxShadow: `inset 0 0 0 2px ${preset.swatch}` }} />
+                                <span className="text-[9px] text-[#A1A1AA] leading-none">{preset.name}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      {/* Appearance (light / dark) */}
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] text-[#71717A] font-medium">Appearance</label>
+                        <div className="flex rounded-lg border border-white/8 overflow-hidden">
+                          {(["light", "dark"] as const).map(s => {
+                            const cur = (form.design as Record<string, string>)?.colorScheme ?? "dark"
+                            return (
+                              <button key={s}
+                                onClick={() => update("design", { ...(form.design ?? {}), colorScheme: s })}
+                                className={`px-3 py-1 text-[10px] capitalize transition-colors ${cur === s ? "bg-indigo-600 text-white" : "text-[#71717A] hover:text-white"}`}
+                              >{s}</button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      {/* Background */}
+                      <div>
+                        <label className="text-[10px] text-[#71717A] mb-1.5 block font-medium">Background</label>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {BACKGROUND_PRESETS.map(bp => {
+                            const d = (form.design ?? {}) as Record<string, string>
+                            const active = (d.background ?? "") === (bp.value.background ?? "") && (d.backgroundGradient ?? "") === (bp.value.backgroundGradient ?? "")
+                            return (
+                              <button
+                                key={bp.id}
+                                title={bp.label}
+                                onClick={() => {
+                                  const nd: Record<string, string> = { ...((form.design ?? {}) as Record<string, string>) }
+                                  if (bp.value.background != null) nd.background = bp.value.background; else delete nd.background
+                                  if (bp.value.backgroundGradient != null) nd.backgroundGradient = bp.value.backgroundGradient; else delete nd.backgroundGradient
+                                  update("design", nd)
+                                }}
+                                className={`h-9 rounded-lg border relative overflow-hidden transition-all ${active ? "border-indigo-500/60" : "border-white/8 hover:border-white/20"}`}
+                                style={{ background: bp.value.backgroundGradient ?? bp.value.background ?? "linear-gradient(135deg,#1a1a2e,#16213e)" }}
+                              >
+                                <span className="absolute inset-x-0 bottom-0 text-[8px] text-white bg-black/40 leading-tight py-px">{bp.label}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
                       {/* Accent color */}
                       <div>
                         <label className="text-[10px] text-[#71717A] mb-1.5 block font-medium">Accent color</label>
@@ -2153,17 +2235,12 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                 <span className="text-[10px] text-[#52525B]">myapp.lovable.app</span>
               </div>
             </div>
-            <div className="relative h-[calc(100%-40px)] bg-gradient-to-br from-[#1a1a2e] to-[#16213e] flex items-center justify-center">
+            <div className="relative h-[calc(100%-40px)] flex items-center justify-center" style={{ background: previewStageBg.pageGradient ?? previewStageBg.pageBg }}>
               {(form.blocks ?? []).length > 0 ? (
                 <BlocksPreview
                   blocks={form.blocks ?? []}
                   plans={selectedPlans.length > 0 ? selectedPlans : plans.slice(0, 3)}
-                  theme={{
-                    accentColor,
-                    fontFamily: form.font_family ?? "system",
-                    buttonShape: form.button_shape ?? "rounded",
-                    overlayOpacity: form.overlay_opacity ?? 65,
-                  }}
+                  theme={previewTheme}
                   displayMode={form.display_mode ?? "modal"}
                   device={previewDevice}
                   highlightId={selectedBlockId}

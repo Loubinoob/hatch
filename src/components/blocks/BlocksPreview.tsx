@@ -1,8 +1,9 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
-import { Check, Shield, Star, ChevronDown, ChevronUp, X, Sparkles, TrendingUp, Lock, Zap, Heart, Award, Crown } from "lucide-react"
+import { Check, Shield, Star, ChevronDown, ChevronUp, X, Sparkles, TrendingUp, Lock, Zap, Heart, Award, Crown, ImageIcon } from "lucide-react"
 import type { Block, BlockTheme, DisplayMode } from "@/lib/blocks/types"
+import { resolveTheme } from "@/lib/blocks/theme"
 
 type Plan = {
   id: string
@@ -28,19 +29,9 @@ const CURRENCY_SYMBOLS: Record<string, string> = {
   USD: "$", EUR: "€", GBP: "£", CAD: "C$", AUD: "A$", JPY: "¥", CHF: "CHF", BRL: "R$",
 }
 
-const FONTS: Record<string, string> = {
-  system: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif',
-  serif:  '"Tiempos", "Charter", Georgia, "Times New Roman", serif',
-  mono:   '"JetBrains Mono", ui-monospace, "Cascadia Code", monospace',
-}
-
-const RADIUS: Record<string, string> = {
-  rounded: "12px",
-  pill:    "999px",
-  square:  "4px",
-}
-
 const PADDING_MAP: Record<string, string> = { s: "12px", m: "20px", l: "32px" }
+
+const IMG_MAXW: Record<string, string> = { s: "150px", m: "240px", l: "360px", full: "100%" }
 
 // Icon lookup for features
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string; style?: React.CSSProperties }>> = {
@@ -65,9 +56,10 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
     }
   }, [highlightId])
 
-  const accent    = theme.accentColor ?? "#6366F1"
-  const font      = FONTS[theme.fontFamily ?? "system"]
-  const btnRadius = RADIUS[theme.buttonShape ?? "rounded"]
+  // Full token set derived from the (partial) theme — drives every colour below.
+  const t         = resolveTheme(theme)
+  const font      = t.font
+  const btnRadius = t.btnRadius
   const sym       = CURRENCY_SYMBOLS[currency] ?? "$"
 
   function getPrice(plan: Plan) {
@@ -110,7 +102,7 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
   }
 
   function effectiveAccent(props: Record<string, unknown>) {
-    return (props.accentOverride as string) || accent
+    return (props.accentOverride as string) || t.accent
   }
 
   // ── Individual block renderers ───────────────────────────────────────────────
@@ -136,14 +128,40 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
                 {p.eyebrow as string}
               </span>
             )}
-            <h2 className={`font-bold text-white mb-2.5 ${device === "mobile" ? "text-[24px] leading-[1.18]" : "text-[32px] leading-[1.12]"}`}
-              style={{ letterSpacing: "-0.025em", textAlign: align === "left" ? "left" : "center" }}>
+            <h2 className={`font-bold mb-2.5 ${device === "mobile" ? "text-[24px] leading-[1.18]" : "text-[32px] leading-[1.12]"}`}
+              style={{ color: t.text, letterSpacing: "-0.025em", textAlign: align === "left" ? "left" : "center" }}>
               {(p.headline as string) ?? "Unlock the full power"}
             </h2>
             {p.subheadline != null && (
-              <p className={`text-[14px] text-white/65 leading-[1.55] max-w-md ${align === "left" ? "" : "mx-auto"}`}>
+              <p className={`text-[14px] leading-[1.55] max-w-md ${align === "left" ? "" : "mx-auto"}`} style={{ color: t.textMuted }}>
                 {p.subheadline as string}
               </p>
+            )}
+          </div>
+        )
+      }
+
+      // ─── IMAGE / ILLUSTRATION ────────────────────────────────────────────────
+      case "image": {
+        const url = p.url as string | undefined
+        const align = (p.alignment as string) ?? "center"
+        const maxW = IMG_MAXW[(p.size as string) ?? "m"] ?? IMG_MAXW.m
+        const rounded = p.rounded !== false
+        const justify = align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center"
+        return (
+          <div className="hatch-block-image" style={{ ...wrap, display: "flex", justifyContent: justify }}>
+            {url ? (
+              <img
+                src={url}
+                alt={(p.alt as string) ?? ""}
+                style={{ width: maxW, maxWidth: "100%", height: "auto", objectFit: "contain", borderRadius: rounded ? "16px" : "0" }}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center gap-2"
+                style={{ width: maxW === "100%" ? "100%" : maxW, aspectRatio: "4 / 3", borderRadius: "16px", background: t.videoTint, border: `1px solid ${t.cardBorder}` }}>
+                <ImageIcon className="w-6 h-6" style={{ color: t.textFaint }} />
+                <span className="text-[10px] uppercase tracking-wider" style={{ color: t.textFaint }}>Image</span>
+              </div>
             )}
           </div>
         )
@@ -158,15 +176,15 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
           <div className="hatch-block-plans" style={{ ...wrap, paddingLeft: device === "mobile" ? "16px" : "20px", paddingRight: device === "mobile" ? "16px" : "20px" }}>
             {(p.yearlyToggle as boolean) !== false && hasYearly && (
               <div className="flex items-center justify-center gap-3 mb-5">
-                <span className={`text-[11px] font-medium transition-colors ${!yearly ? "text-white" : "text-white/40"}`}>Monthly</span>
+                <span className="text-[11px] font-medium transition-colors" style={{ color: !yearly ? t.text : t.textFaint }}>Monthly</span>
                 <button
                   onClick={() => setYearly(!yearly)}
                   className="relative w-10 h-5 rounded-full flex-shrink-0 transition-all"
-                  style={{ background: yearly ? acc : "rgba(255,255,255,0.15)" }}
+                  style={{ background: yearly ? acc : t.track }}
                 >
-                  <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform shadow ${yearly ? "translate-x-5" : ""}`} />
+                  <div className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full transition-transform shadow ${yearly ? "translate-x-5" : ""}`} style={{ background: "#fff" }} />
                 </button>
-                <span className={`text-[11px] font-medium transition-colors ${yearly ? "text-white" : "text-white/40"}`}>
+                <span className="text-[11px] font-medium transition-colors" style={{ color: yearly ? t.text : t.textFaint }}>
                   Yearly
                   {yearly && (
                     <span className="ml-1 text-[9px] font-bold px-1.5 py-0.5 rounded-full"
@@ -190,26 +208,26 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
                       border: `1.5px solid ${acc}66`,
                       boxShadow: `0 0 0 1px ${acc}1f, 0 18px 44px -14px ${acc}66`,
                     } : {
-                      background: "rgba(255,255,255,0.025)",
-                      border: "1.5px solid rgba(255,255,255,0.08)",
+                      background: t.card,
+                      border: `1.5px solid ${t.cardBorder}`,
                     }}
                   >
                     {popular && (
                       <div className="absolute -top-2.5 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-[9px] font-bold uppercase whitespace-nowrap"
-                        style={{ background: acc, color: "#fff", letterSpacing: "0.08em", boxShadow: `0 4px 14px ${acc}77` }}>
+                        style={{ background: acc, color: t.onAccent, letterSpacing: "0.08em", boxShadow: `0 4px 14px ${acc}77` }}>
                         ★ Most Popular
                       </div>
                     )}
-                    <p className="text-[12px] font-semibold text-white/90 mb-2" style={{ marginTop: popular ? "6px" : 0 }}>{plan.name}</p>
+                    <p className="text-[12px] font-semibold mb-2" style={{ color: t.text, marginTop: popular ? "6px" : 0 }}>{plan.name}</p>
                     <div className="flex items-baseline gap-1">
                       {isFree ? (
-                        <span className="text-[30px] font-bold text-white tracking-tight leading-none">Free</span>
+                        <span className="text-[30px] font-bold tracking-tight leading-none" style={{ color: t.text }}>Free</span>
                       ) : (
                         <>
-                          <span className="text-[30px] font-bold text-white tracking-tight leading-none" style={{ fontFeatureSettings: '"tnum"' }}>
+                          <span className="text-[30px] font-bold tracking-tight leading-none" style={{ color: t.text, fontFeatureSettings: '"tnum"' }}>
                             {sym}{formatPrice(price)}
                           </span>
-                          <span className="text-[11px] text-white/45 font-medium">/mo</span>
+                          <span className="text-[11px] font-medium" style={{ color: t.textFaint }}>/mo</span>
                         </>
                       )}
                     </div>
@@ -220,12 +238,12 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
                           Save {savings}%
                         </span>
                       ) : yearly && plan.price_yearly > 0 ? (
-                        <span className="text-[9.5px] text-white/40">billed {sym}{Math.round(plan.price_yearly / 100)}/yr</span>
+                        <span className="text-[9.5px]" style={{ color: t.textFaint }}>billed {sym}{Math.round(plan.price_yearly / 100)}/yr</span>
                       ) : null}
                     </div>
                     <ul className="space-y-2 mb-5 flex-1">
                       {(plan.features ?? []).slice(0, 5).map((f, i) => (
-                        <li key={i} className="flex items-start gap-2 text-[11px] text-white/72 leading-[1.45]">
+                        <li key={i} className="flex items-start gap-2 text-[11px] leading-[1.45]" style={{ color: t.textMuted }}>
                           <span className="flex items-center justify-center w-[15px] h-[15px] rounded-full flex-shrink-0 mt-px" style={{ background: `${acc}22` }}>
                             <Check className="w-2.5 h-2.5" style={{ color: acc }} strokeWidth={3} />
                           </span>
@@ -236,10 +254,10 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
                     <button
                       className="w-full py-2.5 text-[11px] font-semibold transition-all"
                       style={{
-                        background: popular ? acc : "rgba(255,255,255,0.06)",
-                        color: popular ? "#fff" : "rgba(255,255,255,0.92)",
+                        background: popular ? acc : t.card,
+                        color: popular ? t.onAccent : t.text,
                         borderRadius: btnRadius,
-                        border: popular ? "none" : "1px solid rgba(255,255,255,0.1)",
+                        border: popular ? "none" : `1px solid ${t.cardBorder}`,
                         boxShadow: popular ? `0 6px 18px ${acc}66` : "none",
                       }}
                     >
@@ -260,13 +278,13 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
         return (
           <div className="hatch-block-features" style={wrap}>
             {p.title != null && (
-              <p className="text-[13px] font-semibold text-white mb-3">{p.title as string}</p>
+              <p className="text-[13px] font-semibold mb-3" style={{ color: t.text }}>{p.title as string}</p>
             )}
             <ul className={layout === "grid" ? "grid grid-cols-2 gap-2" : "space-y-2"}>
               {items.map((item, i) => {
                 const Icon = ICON_MAP[item.icon as string] ?? Check
                 return (
-                  <li key={i} className="flex items-start gap-2.5 text-[12px] text-white/80 leading-[1.5]">
+                  <li key={i} className="flex items-start gap-2.5 text-[12px] leading-[1.5]" style={{ color: t.textMuted }}>
                     <span
                       className="flex items-center justify-center w-5 h-5 rounded-md flex-shrink-0 mt-0.5"
                       style={{ background: `${acc}1f`, color: acc }}
@@ -291,33 +309,33 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
         return (
           <div className="hatch-block-testimonials" style={wrap}>
             {p.title != null && (
-              <p className="text-[12px] font-semibold text-white/90 uppercase tracking-wider mb-3" style={{ letterSpacing: "0.08em" }}>
+              <p className="text-[12px] font-semibold uppercase tracking-wider mb-3" style={{ color: t.text, letterSpacing: "0.08em" }}>
                 {p.title as string}
               </p>
             )}
             <div className={`grid gap-3 ${items.length > 1 ? "grid-cols-2" : "grid-cols-1"}`}>
               {items.slice(0, 4).map((item, i) => (
                 <div key={i} className="rounded-xl p-3 text-left"
-                  style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)" }}>
+                  style={{ background: t.card, border: `1px solid ${t.cardBorder}` }}>
                   <div className="flex gap-0.5 mb-2">
                     {Array.from({ length: 5 }).map((_, j) => (
                       <Star key={j} className="w-3 h-3" style={{ fill: "#F59E0B", color: "#F59E0B" }} />
                     ))}
                   </div>
-                  <p className="text-[11px] text-white/75 leading-[1.5] mb-2.5">
+                  <p className="text-[11px] leading-[1.5] mb-2.5" style={{ color: t.textMuted }}>
                     &ldquo;{item.quote}&rdquo;
                   </p>
                   <div className="flex items-center gap-2">
                     {item.avatar
                       ? <img src={item.avatar} alt={item.author} className="w-6 h-6 rounded-full object-cover" />
-                      : <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white"
-                          style={{ background: `linear-gradient(135deg, ${acc}, ${acc}99)` }}>
+                      : <div className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold"
+                          style={{ background: `linear-gradient(135deg, ${acc}, ${acc}99)`, color: t.onAccent }}>
                           {item.author?.charAt(0).toUpperCase()}
                         </div>
                     }
                     <div className="leading-tight">
-                      <p className="text-[10px] font-semibold text-white">{item.author}</p>
-                      {item.role && <p className="text-[9px] text-white/45">{item.role}</p>}
+                      <p className="text-[10px] font-semibold" style={{ color: t.text }}>{item.author}</p>
+                      {item.role && <p className="text-[9px]" style={{ color: t.textFaint }}>{item.role}</p>}
                     </div>
                   </div>
                 </div>
@@ -333,15 +351,15 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
         return (
           <div className="hatch-block-logos" style={wrap}>
             {p.title != null && (
-              <p className="text-[9px] text-white/40 uppercase tracking-[0.2em] font-medium mb-3">
+              <p className="text-[9px] uppercase tracking-[0.2em] font-medium mb-3" style={{ color: t.textFaint }}>
                 {p.title as string}
               </p>
             )}
             <div className="flex flex-wrap justify-center items-center gap-x-5 gap-y-3">
               {items.map((item, i) => (
                 item.logo_url
-                  ? <img key={i} src={item.logo_url} alt={item.name} className="h-5 opacity-50 hover:opacity-80 transition-opacity object-contain grayscale" />
-                  : <span key={i} className="text-[12px] text-white/45 font-bold tracking-tight uppercase" style={{ letterSpacing: "-0.01em" }}>{item.name}</span>
+                  ? <img key={i} src={item.logo_url} alt={item.name} className="h-5 opacity-60 hover:opacity-100 transition-opacity object-contain grayscale" />
+                  : <span key={i} className="text-[12px] font-bold tracking-tight uppercase" style={{ color: t.textFaint, letterSpacing: "-0.01em" }}>{item.name}</span>
               ))}
             </div>
           </div>
@@ -354,22 +372,22 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
         return (
           <div className="hatch-block-comparison" style={wrap}>
             {p.title != null && (
-              <p className="text-[13px] font-semibold text-white mb-3">{p.title as string}</p>
+              <p className="text-[13px] font-semibold mb-3" style={{ color: t.text }}>{p.title as string}</p>
             )}
-            <div className="rounded-xl overflow-hidden" style={{ border: "1px solid rgba(255,255,255,0.08)" }}>
-              <div className="grid grid-cols-3 px-3 py-2.5" style={{ background: "rgba(255,255,255,0.04)" }}>
-                <span className="text-[10px] text-white/50 font-medium">Feature</span>
+            <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${t.cardBorder}` }}>
+              <div className="grid grid-cols-3 px-3 py-2.5" style={{ background: t.card }}>
+                <span className="text-[10px] font-medium" style={{ color: t.textFaint }}>Feature</span>
                 {plans.slice(0, 2).map(pl => (
-                  <span key={pl.id} className="text-[10px] font-semibold text-white text-center">{pl.name}</span>
+                  <span key={pl.id} className="text-[10px] font-semibold text-center" style={{ color: t.text }}>{pl.name}</span>
                 ))}
               </div>
               {rows.slice(0, 7).map((row, i) => (
                 <div key={i} className="grid grid-cols-3 px-3 py-2.5 items-center"
-                  style={{ borderTop: "1px solid rgba(255,255,255,0.05)", background: i % 2 === 1 ? "rgba(255,255,255,0.015)" : undefined }}>
-                  <span className="text-[10px] text-white/65 text-left">{row.feature}</span>
+                  style={{ borderTop: `1px solid ${t.border}`, background: i % 2 === 1 ? t.hairline : undefined }}>
+                  <span className="text-[10px] text-left" style={{ color: t.textMuted }}>{row.feature}</span>
                   {(row.values ?? []).slice(0, 2).map((val, j) => (
                     <span key={j} className="text-[10px] text-center font-medium"
-                      style={{ color: val === "✓" || val === "yes" ? "#34D399" : val === "✗" || val === "no" ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.8)" }}>
+                      style={{ color: val === "✓" || val === "yes" ? "#34D399" : val === "✗" || val === "no" ? t.textFaint : t.textMuted }}>
                       {val === "yes" ? "✓" : val === "no" ? "✗" : val}
                     </span>
                   ))}
@@ -386,23 +404,23 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
         return (
           <div className="hatch-block-faq" style={wrap}>
             {p.title != null && (
-              <p className="text-[13px] font-semibold text-white mb-3">{p.title as string}</p>
+              <p className="text-[13px] font-semibold mb-3" style={{ color: t.text }}>{p.title as string}</p>
             )}
             <div className="space-y-1.5">
               {items.map((item, i) => (
                 <div key={i} className="rounded-xl overflow-hidden"
-                  style={{ border: "1px solid rgba(255,255,255,0.07)", background: openFaq === i ? "rgba(255,255,255,0.03)" : "transparent" }}>
+                  style={{ border: `1px solid ${t.cardBorder}`, background: openFaq === i ? t.card : "transparent" }}>
                   <button
-                    className="w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors hover:bg-white/3"
+                    className="w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors"
                     onClick={() => setOpenFaq(openFaq === i ? null : i)}>
-                    <span className="text-[11px] font-medium text-white">{item.question}</span>
+                    <span className="text-[11px] font-medium" style={{ color: t.text }}>{item.question}</span>
                     {openFaq === i
-                      ? <ChevronUp className="w-3.5 h-3.5 text-white/50 flex-shrink-0" />
-                      : <ChevronDown className="w-3.5 h-3.5 text-white/50 flex-shrink-0" />
+                      ? <ChevronUp className="w-3.5 h-3.5 flex-shrink-0" style={{ color: t.textFaint }} />
+                      : <ChevronDown className="w-3.5 h-3.5 flex-shrink-0" style={{ color: t.textFaint }} />
                     }
                   </button>
                   {openFaq === i && (
-                    <div className="px-3 pb-3 text-[10px] text-white/60 leading-[1.6]">
+                    <div className="px-3 pb-3 text-[10px] leading-[1.6]" style={{ color: t.textMuted }}>
                       {item.answer}
                     </div>
                   )}
@@ -428,7 +446,7 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
               </span>
             </div>
             {p.subtext != null && (
-              <p className="text-[10px] text-white/40 text-center mt-1.5">{p.subtext as string}</p>
+              <p className="text-[10px] text-center mt-1.5" style={{ color: t.textFaint }}>{p.subtext as string}</p>
             )}
           </div>
         )
@@ -439,9 +457,9 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
         return (
           <div className="hatch-block-guarantee" style={wrap}>
             <div className="inline-flex items-center gap-2 px-3 py-2 rounded-lg"
-              style={{ background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.18)" }}>
-              <Shield className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#34D399" }} />
-              <p className="text-[11px] font-medium" style={{ color: "#34D399" }}>
+              style={{ background: "rgba(52,211,153,0.10)", border: "1px solid rgba(52,211,153,0.22)" }}>
+              <Shield className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#10B981" }} />
+              <p className="text-[11px] font-medium" style={{ color: "#10B981" }}>
                 {(p.text as string) ?? "30-day money-back guarantee"}
               </p>
             </div>
@@ -455,13 +473,10 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
         return (
           <div className="hatch-block-video" style={wrap}>
             {p.title != null && (
-              <p className="text-[12px] font-medium text-white/70 mb-2.5 text-center">{p.title as string}</p>
+              <p className="text-[12px] font-medium mb-2.5 text-center" style={{ color: t.textMuted }}>{p.title as string}</p>
             )}
             <div className="rounded-2xl overflow-hidden aspect-video relative"
-              style={{
-                border: "1px solid rgba(255,255,255,0.08)",
-                background: hasUrl ? "#000" : "radial-gradient(120% 120% at 50% 0%, rgba(255,255,255,0.07), rgba(255,255,255,0.015))",
-              }}>
+              style={{ border: `1px solid ${t.cardBorder}`, background: hasUrl ? "#000" : t.videoTint }}>
               {hasUrl
                 ? <iframe
                     src={String(p.url).replace("watch?v=", "embed/")}
@@ -473,7 +488,7 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
                       style={{ background: `${acc}22`, border: `1.5px solid ${acc}`, boxShadow: `0 8px 24px -6px ${acc}66` }}>
                       <span className="text-lg ml-0.5" style={{ color: acc }}>▶</span>
                     </div>
-                    <span className="text-[10px] text-white/35 uppercase tracking-wider">Video preview</span>
+                    <span className="text-[10px] uppercase tracking-wider" style={{ color: t.textFaint }}>Video preview</span>
                   </div>
               }
             </div>
@@ -491,7 +506,7 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
                 <div key={i} className="text-center">
                   <p className="text-[26px] font-bold tracking-tight leading-none"
                     style={{ color: acc, fontFeatureSettings: '"tnum"' }}>{item.value}</p>
-                  <p className="text-[10px] text-white/55 mt-1 font-medium uppercase tracking-wider" style={{ letterSpacing: "0.06em" }}>{item.label}</p>
+                  <p className="text-[10px] mt-1 font-medium uppercase tracking-wider" style={{ color: t.textMuted, letterSpacing: "0.06em" }}>{item.label}</p>
                 </div>
               ))}
             </div>
@@ -503,18 +518,18 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
       case "footer": {
         return (
           <div className="hatch-block-footer" style={{ ...wrap, paddingTop: "12px", paddingBottom: "20px" }}>
-            <p className="text-[10px] text-white/35">
+            <p className="text-[10px]" style={{ color: t.textFaint }}>
               {(p.text as string) ?? "Cancel anytime · No hidden fees"}
             </p>
             {!!p.showPoweredBy && (
-              <p className="text-[8px] text-white/20 mt-1.5">⚡ Powered by Hatch</p>
+              <p className="text-[8px] mt-1.5" style={{ color: t.textFaint, opacity: 0.6 }}>⚡ Powered by Hatch</p>
             )}
           </div>
         )
       }
 
       default:
-        return <div className="px-4 py-2 text-[10px] text-white/30 italic">Unknown block: {block.type}</div>
+        return <div className="px-4 py-2 text-[10px] italic" style={{ color: t.textFaint }}>Unknown block: {block.type}</div>
     }
   }
 
@@ -527,7 +542,7 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
           key={block.id}
           data-block-id={block.id}
           style={{
-            outline: highlightId === block.id ? `2px solid ${accent}` : "none",
+            outline: highlightId === block.id ? `2px solid ${t.accent}` : "none",
             outlineOffset: highlightId === block.id ? "-2px" : "0",
             borderRadius: "8px",
             transition: "outline-color 0.15s",
@@ -541,11 +556,12 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
 
   if (displayMode === "fullscreen") {
     return (
-      <div className="absolute inset-0 overflow-y-auto" style={{ background: "#0A0A0F" }}>
+      <div className="absolute inset-0 overflow-y-auto" style={{ background: t.pageGradient ?? t.pageBg }}>
         {onClose && (
           <button onClick={onClose}
-            className="sticky top-3 right-3 float-right z-10 w-7 h-7 rounded-full bg-white/8 hover:bg-white/14 flex items-center justify-center mr-3 mt-3 transition-colors">
-            <X className="w-3.5 h-3.5 text-white/60" />
+            className="sticky top-3 right-3 float-right z-10 w-7 h-7 rounded-full flex items-center justify-center mr-3 mt-3 transition-colors"
+            style={{ background: t.closeBg }}>
+            <X className="w-3.5 h-3.5" style={{ color: t.closeIcon }} />
           </button>
         )}
         <div className={`mx-auto py-8 px-2 ${device === "mobile" ? "max-w-[400px]" : "max-w-[640px]"}`}>
@@ -558,23 +574,26 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
   // Modal mode
   return (
     <div className="absolute inset-0 flex items-center justify-center p-3" style={{ fontFamily: font }}>
-      <div className="absolute inset-0 backdrop-blur" style={{ background: `rgba(0,0,0,${(theme.overlayOpacity ?? 65) / 100})` }} />
+      {/* dim host page; if a page background is set, show it behind the modal */}
+      <div className="absolute inset-0" style={{ background: t.pageGradient ?? (theme.background ? t.pageBg : "transparent") }} />
+      <div className="absolute inset-0 backdrop-blur" style={{ background: t.overlay }} />
       <div
         className="relative overflow-auto"
         style={{
-          background: "#0F0F12",
-          border: "1px solid rgba(255,255,255,0.1)",
+          background: t.surface,
+          border: `1px solid ${t.border}`,
           borderRadius: "20px",
           maxHeight: "90%",
           width: "100%",
           maxWidth: device === "mobile" ? "340px" : "440px",
-          boxShadow: "0 24px 64px -16px rgba(0,0,0,0.5)",
+          boxShadow: t.scheme === "dark" ? "0 24px 64px -16px rgba(0,0,0,0.5)" : "0 24px 64px -16px rgba(12,14,20,0.22)",
         }}
       >
         {onClose && (
           <button onClick={onClose}
-            className="absolute top-3 right-3 w-7 h-7 rounded-full bg-white/8 hover:bg-white/14 flex items-center justify-center z-10 transition-colors">
-            <X className="w-3.5 h-3.5 text-white/60" />
+            className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center z-10 transition-colors"
+            style={{ background: t.closeBg }}>
+            <X className="w-3.5 h-3.5" style={{ color: t.closeIcon }} />
           </button>
         )}
         {content}

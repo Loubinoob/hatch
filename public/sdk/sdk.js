@@ -1009,6 +1009,23 @@
     return html
   }
 
+  function renderBlock_image(props) {
+    if (isHidden(props)) return ''
+    var wrap = blockWrapperStyle(props, '24px')
+    var sizeMap = { s: '150px', m: '240px', l: '360px', full: '100%' }
+    var w = sizeMap[props.size] || sizeMap.m
+    var align = props.alignment === 'left' ? 'flex-start' : (props.alignment === 'right' ? 'flex-end' : 'center')
+    var radius = props.rounded === false ? '0' : '16px'
+    var html = '<div class="hatch-block-image" style="' + wrap + ';display:flex;justify-content:' + align + '">'
+    if (props.url) {
+      html += '<img src="' + esc(props.url) + '" alt="' + esc(props.alt || '') + '" style="width:' + w + ';max-width:100%;height:auto;object-fit:contain;border-radius:' + radius + '">'
+    } else {
+      html += '<div style="width:' + (w === '100%' ? '100%' : w) + ';aspect-ratio:4/3;border-radius:16px;background:var(--hatch-card,rgba(255,255,255,0.045));border:1px solid var(--hatch-border,rgba(255,255,255,0.09));display:flex;align-items:center;justify-content:center;color:var(--hatch-sub-text,rgba(255,255,255,0.4));font-size:10px;text-transform:uppercase;letter-spacing:0.08em">Image</div>'
+    }
+    html += '</div>'
+    return html
+  }
+
   // Block `plans` renderer — kept in visual parity with the React BlocksPreview
   // premium cards (equal-height flex cards, floating popular badge, left-aligned
   // content). Cards keep class "hatch-plan" + data-plan-id (hover tracking) and a
@@ -1026,7 +1043,7 @@
     }
     var cardStyle = popular
       ? 'background:linear-gradient(180deg,' + a + '22,' + a + '08);border:1.5px solid ' + a + '66;box-shadow:0 0 0 1px ' + a + '1f,0 18px 44px -14px ' + a + '66'
-      : 'background:rgba(255,255,255,0.025);border:1.5px solid rgba(255,255,255,0.08)'
+      : 'background:var(--hatch-card,rgba(255,255,255,0.045));border:1.5px solid var(--hatch-border,rgba(255,255,255,0.08))'
     var h = '<div class="hatch-plan" data-plan-id="' + plan.id + '" style="position:relative;display:flex;flex-direction:column;text-align:left;border-radius:16px;padding:20px;cursor:pointer;box-sizing:border-box;' + cardStyle + '">'
     if (popular) h += '<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);white-space:nowrap;padding:4px 12px;border-radius:999px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:' + a + ';color:#fff;box-shadow:0 4px 14px ' + a + '77">★ Most Popular</div>'
     h += '<p style="font-size:12px;font-weight:600;margin:' + (popular ? '6px' : '0') + ' 0 8px;color:var(--hatch-text,rgba(255,255,255,0.9))">' + esc(plan.name) + '</p>'
@@ -1051,7 +1068,7 @@
     h += '</ul>'
     var ctaStyle = popular
       ? 'background:' + a + ';color:#fff;border:none;box-shadow:0 6px 18px ' + a + '66'
-      : 'background:rgba(255,255,255,0.06);color:var(--hatch-text,rgba(255,255,255,0.92));border:1px solid rgba(255,255,255,0.1)'
+      : 'background:var(--hatch-card,rgba(255,255,255,0.06));color:var(--hatch-text,rgba(255,255,255,0.92));border:1px solid var(--hatch-border,rgba(255,255,255,0.1))'
     h += '<button class="hatch-cta" data-checkout="' + plan.id + '" style="width:100%;padding:11px;margin-top:0;border-radius:var(--hatch-btn-radius,10px);cursor:pointer;font-size:11px;font-weight:600;transition:opacity 0.15s;' + ctaStyle + '">' + esc(ctaCopy) + '</button>'
     h += '</div>'
     return h
@@ -1104,7 +1121,7 @@
       var avatarHtml = item.avatar
         ? '<img src="' + esc(item.avatar) + '" alt="' + esc(item.author || '') + '" style="width:24px;height:24px;border-radius:50%;object-fit:cover" />'
         : '<div style="width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,' + a + ',' + a + '99);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;color:#fff">' + esc((item.author || '?').charAt(0).toUpperCase()) + '</div>'
-      html += '<div style="border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:12px;background:rgba(255,255,255,0.04)">'
+      html += '<div style="border:1px solid var(--hatch-border,rgba(255,255,255,0.07));border-radius:14px;padding:12px;background:var(--hatch-card,rgba(255,255,255,0.04))">'
         + '<div style="display:flex;gap:2px;margin-bottom:8px">' + '★★★★★'.split('').map(function(s) { return '<span style="color:#F59E0B;font-size:11px">' + s + '</span>' }).join('') + '</div>'
         + '<p style="font-size:11px;color:var(--hatch-sub-text,rgba(255,255,255,0.75));margin:0 0 10px;line-height:1.5">&ldquo;' + esc(item.quote || '') + '&rdquo;</p>'
         + '<div style="display:flex;align-items:center;gap:8px">' + avatarHtml
@@ -1141,13 +1158,13 @@
     var wrap = blockWrapperStyle(props, '20px')
     var html = '<div class="hatch-block-comparison" style="' + wrap + '">'
     if (props.title) html += '<p style="font-size:13px;font-weight:600;color:var(--hatch-text,#fff);margin:0 0 12px">' + esc(props.title) + '</p>'
-    html += '<div style="border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:hidden">'
-    html += '<div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;padding:10px 14px;background:rgba(255,255,255,0.04)">'
+    html += '<div style="border:1px solid var(--hatch-border,rgba(255,255,255,0.08));border-radius:12px;overflow:hidden">'
+    html += '<div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;padding:10px 14px;background:var(--hatch-card,rgba(255,255,255,0.04))">'
       + '<span style="font-size:10px;color:var(--hatch-sub-text,rgba(255,255,255,0.5));font-weight:500">Feature</span>'
     planNames.forEach(function(n) { html += '<span style="font-size:10px;text-align:center;color:var(--hatch-text,#fff);font-weight:600">' + esc(n) + '</span>' })
     html += '</div>'
     rows.slice(0, 7).forEach(function(row, i) {
-      html += '<div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;padding:10px 14px;border-top:1px solid rgba(255,255,255,0.05)' + (i % 2 === 1 ? ';background:rgba(255,255,255,0.015)' : '') + '">'
+      html += '<div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;padding:10px 14px;border-top:1px solid var(--hatch-border,rgba(255,255,255,0.05))' + (i % 2 === 1 ? ';background:var(--hatch-hairline,rgba(255,255,255,0.015))' : '') + '">'
       html += '<span style="font-size:10px;color:var(--hatch-sub-text,rgba(255,255,255,0.65))">' + esc(row.feature || '') + '</span>'
       ;(row.values || []).slice(0, 2).forEach(function(v) {
         var display = v === 'yes' ? '✓' : v === 'no' ? '✗' : v
@@ -1167,7 +1184,7 @@
     var html = '<div class="hatch-block-faq" style="' + wrap + '">'
     if (props.title) html += '<p style="font-size:13px;font-weight:600;color:var(--hatch-text,#fff);margin:0 0 12px">' + esc(props.title) + '</p>'
     items.forEach(function(item) {
-      html += '<details style="border:1px solid rgba(255,255,255,0.07);border-radius:12px;margin-bottom:6px;overflow:hidden;background:rgba(255,255,255,0.02)">'
+      html += '<details style="border:1px solid var(--hatch-border,rgba(255,255,255,0.07));border-radius:12px;margin-bottom:6px;overflow:hidden;background:var(--hatch-hairline,rgba(255,255,255,0.02))">'
         + '<summary style="cursor:pointer;padding:11px 14px;font-size:12px;font-weight:500;color:var(--hatch-text,#fff);list-style:none;user-select:none;text-align:left">' + esc(item.question || '') + '</summary>'
         + '<p style="margin:0;padding:0 14px 12px;font-size:11px;color:var(--hatch-sub-text,rgba(255,255,255,0.6));line-height:1.6;text-align:left">' + esc(item.answer || '') + '</p>'
         + '</details>'
@@ -1208,10 +1225,10 @@
     if (props.title) html += '<p style="font-size:12px;font-weight:500;color:var(--hatch-sub-text,rgba(255,255,255,0.7));text-align:center;margin:0 0 10px">' + esc(props.title) + '</p>'
     if (props.url) {
       var src = String(props.url).replace('watch?v=', 'embed/')
-      html += '<div style="position:relative;padding-bottom:56.25%;height:0;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);background:#000">'
+      html += '<div style="position:relative;padding-bottom:56.25%;height:0;border-radius:16px;overflow:hidden;border:1px solid var(--hatch-border,rgba(255,255,255,0.08));background:#000">'
         + '<iframe src="' + esc(src) + '" style="position:absolute;top:0;left:0;width:100%;height:100%" frameborder="0" allowfullscreen></iframe></div>'
     } else {
-      html += '<div style="position:relative;padding-bottom:56.25%;height:0;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);background:radial-gradient(120% 120% at 50% 0%,rgba(255,255,255,0.07),rgba(255,255,255,0.015))">'
+      html += '<div style="position:relative;padding-bottom:56.25%;height:0;border-radius:16px;overflow:hidden;border:1px solid var(--hatch-border,rgba(255,255,255,0.08));background:var(--hatch-card,radial-gradient(120% 120% at 50% 0%,rgba(255,255,255,0.07),rgba(255,255,255,0.015)))">'
         + '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px">'
         + '<div style="width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:' + a + '22;border:1.5px solid ' + a + ';box-shadow:0 8px 24px -6px ' + a + '66">'
         + '<span style="font-size:18px;color:' + a + ';margin-left:2px">▶</span></div>'
@@ -1252,6 +1269,7 @@
     var p = block.props || {}
     switch (block.type) {
       case 'hero':         return renderBlock_hero(p, acc)
+      case 'image':        return renderBlock_image(p)
       case 'plans':        return renderBlock_plans(p, plans, acc, config, yearly)
       case 'features':     return renderBlock_features(p, acc)
       case 'testimonials': return renderBlock_testimonials(p, acc)
@@ -1271,34 +1289,65 @@
   // yearly is passed in from renderPaywall so the shared click-delegate controls state
   function renderBlockPaywall(config, plans, overlay, yearly) {
     yearly = yearly || false
-    var acc   = config._chameleon_accent || (config.design && config.design.accentColor) || '#6366F1'
+    var design = config.design || {}
+    var acc   = config._chameleon_accent || design.accentColor || '#6366F1'
     var mode  = config.display_mode || 'modal'
     var blocks = config.blocks || []
 
+    // ── Resolve theme tokens (kept in parity with lib/blocks/theme.ts) ──
+    // Chameleon (auto) wins when it detected the host; otherwise use the manual
+    // design.colorScheme + background/surface overrides.
+    var hasChameleon = config._chameleon_dark !== undefined
+    var dark = hasChameleon ? !!config._chameleon_dark : ((design.colorScheme || 'dark') !== 'light')
+    var T = dark
+      ? { pageBg: '#0A0A0F', surface: '#0F0F12', card: 'rgba(255,255,255,0.045)', border: 'rgba(255,255,255,0.09)', hairline: 'rgba(255,255,255,0.03)', text: '#FFFFFF', sub: 'rgba(255,255,255,0.66)' }
+      : { pageBg: '#EEF0F4', surface: '#FFFFFF', card: 'rgba(12,14,20,0.028)', border: 'rgba(12,14,20,0.10)', hairline: 'rgba(12,14,20,0.025)', text: '#0B0B0F', sub: 'rgba(11,11,15,0.62)' }
+    var allowManualBg = !hasChameleon
+    var pageBg  = (allowManualBg && (design.backgroundGradient || design.background)) || T.pageBg
+    var surface = (allowManualBg && design.surface) || T.surface
+    var text    = (allowManualBg && design.textColor) || T.text
+
     var modal = buildModalBase(config, acc)
 
-    // Build content by rendering each block
+    // Re-apply the full token set AFTER any cssText reset so the vars survive and
+    // every block renderer (which reads var(--hatch-*)) adapts to light/dark.
+    function applyTokens() {
+      modal.style.color = text
+      modal.style.fontFamily = config._chameleon_font || FONTS[config.font_family] || FONTS.system
+      modal.style.setProperty('--hatch-accent', acc)
+      modal.style.setProperty('--hatch-btn-radius', config._chameleon_radius || btnRadius(config.button_shape))
+      modal.style.setProperty('--hatch-text', text)
+      modal.style.setProperty('--hatch-sub-text', T.sub)
+      modal.style.setProperty('--hatch-border', T.border)
+      modal.style.setProperty('--hatch-card', T.card)
+      modal.style.setProperty('--hatch-hairline', T.hairline)
+    }
+
     function buildBlocksHtml() {
       return blocks.map(function(b) { return renderBlock(b, plans, acc, config, yearly) }).join('')
     }
 
     if (mode === 'fullscreen') {
-      // Fullscreen: overlay fills viewport, modal is a scrollable column
-      overlay.style.cssText = 'position:fixed;inset:0;z-index:999998;overflow-y:auto;background:#0A0A0F;animation:hatchFadeIn 0.2s ease'
+      // Fullscreen: overlay fills viewport with the page background; modal is a column
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:999998;overflow-y:auto;animation:hatchFadeIn 0.2s ease'
+      overlay.style.background = pageBg
       modal.className = 'hatch-block-fullscreen'
-      modal.style.cssText = 'max-width:640px;margin:0 auto;padding:32px 0 40px;position:relative'
+      modal.style.cssText = 'max-width:640px;margin:0 auto;padding:32px 0 40px;position:relative;background:transparent'
+      applyTokens()
       modal.innerHTML = (config.closeable !== false
         ? '<button id="hatch-close" style="position:sticky;top:12px;float:right;margin:0 12px 0 0;z-index:10">✕</button>'
         : '')
         + buildBlocksHtml()
       overlay.appendChild(modal)
     } else {
-      // Modal: centered with max-height scroll
+      // Modal: centered over the (dimmed) host page; panel uses the surface colour
       overlay.style.cssText = 'position:fixed;inset:0;z-index:999998;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;animation:hatchFadeIn 0.2s ease'
       overlay.style.background = 'rgba(0,0,0,' + ((config.overlay_opacity != null ? config.overlay_opacity : 65) / 100) + ')'
       overlay.style.backdropFilter = 'blur(6px)'
       modal.className = 'hatch-block-modal'
       modal.style.cssText += ';max-height:88vh;overflow-y:auto;border-radius:18px'
+      modal.style.background = surface
+      applyTokens()
       modal.innerHTML = (config.closeable !== false ? '<button id="hatch-close" style="position:absolute;top:12px;right:12px">✕</button>' : '')
         + buildBlocksHtml()
       overlay.appendChild(modal)

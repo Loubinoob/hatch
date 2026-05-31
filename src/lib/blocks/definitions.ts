@@ -37,6 +37,25 @@ export const BLOCK_DEFINITIONS: Record<BlockType, BlockDefinition> = {
     ],
   },
 
+  image: {
+    label: "Image",
+    icon: "🖼️",
+    defaultProps: {
+      url:       "",
+      alt:       "",
+      size:      "m",
+      rounded:   true,
+      alignment: "center",
+      paddingY:  "m",
+    },
+    propSchema: [
+      { key: "url",     label: "Image URL", type: "image_url", placeholder: "https://…" },
+      { key: "alt",     label: "Alt text",  type: "text" },
+      { key: "size",    label: "Size",      type: "enum", options: ["s", "m", "l", "full"] },
+      { key: "rounded", label: "Rounded corners", type: "boolean" },
+    ],
+  },
+
   plans: {
     label: "Pricing Plans",
     icon: "💳",
@@ -253,7 +272,7 @@ export const BLOCK_DEFINITIONS: Record<BlockType, BlockDefinition> = {
 
 /** Ordered list for the block picker (most commonly used first) */
 export const BLOCK_PICKER_ORDER: BlockType[] = [
-  "hero", "plans", "features", "testimonials",
+  "hero", "image", "plans", "features", "testimonials",
   "guarantee", "urgency", "stats", "faq",
   "logos", "comparison", "video", "footer",
 ]

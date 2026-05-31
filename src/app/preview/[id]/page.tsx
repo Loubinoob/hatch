@@ -1,13 +1,14 @@
 "use client"
 
 import { use, useEffect, useState, useCallback } from "react"
-import { Loader2, Monitor, Smartphone, RefreshCw, ArrowLeft, AlertCircle } from "lucide-react"
+import { Loader2, Monitor, Smartphone, RefreshCw, ArrowLeft, AlertCircle, Sun, Moon } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { withDefaults } from "@/lib/paywall-resilience"
 import BlocksPreview from "@/components/blocks/BlocksPreview"
 import PaywallPreview from "@/components/paywall/PaywallPreview"
-import type { Block, BlockTheme, DisplayMode } from "@/lib/blocks/types"
+import { resolveTheme } from "@/lib/blocks/theme"
+import type { Block, BlockTheme, ColorScheme, DisplayMode } from "@/lib/blocks/types"
 
 type Plan = {
   id: string
@@ -38,6 +39,7 @@ export default function PaywallPreviewPage({ params }: { params: Promise<{ id: s
 
   const [snapshot, setSnapshot] = useState<PreviewSnapshot | null>(null)
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop")
+  const [schemeOverride, setSchemeOverride] = useState<ColorScheme | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [source, setSource] = useState<"editor" | "saved">("saved")
@@ -79,6 +81,11 @@ export default function PaywallPreviewPage({ params }: { params: Promise<{ id: s
         fontFamily: (cfg.font_family as BlockTheme["fontFamily"]) ?? "system",
         buttonShape: (cfg.button_shape as BlockTheme["buttonShape"]) ?? "rounded",
         overlayOpacity: (cfg.overlay_opacity as number) ?? 65,
+        colorScheme: (design.colorScheme as BlockTheme["colorScheme"]) ?? "dark",
+        background: design.background || undefined,
+        backgroundGradient: design.backgroundGradient || undefined,
+        surface: design.surface || undefined,
+        textColor: design.textColor || undefined,
       },
       displayMode: (cfg.display_mode as DisplayMode) ?? "modal",
       config: cfg,
@@ -139,6 +146,12 @@ export default function PaywallPreviewPage({ params }: { params: Promise<{ id: s
   const accent = snapshot?.theme.accentColor ?? "#6366F1"
   const hasBlocks = (snapshot?.blocks?.length ?? 0) > 0
 
+  // Optional light/dark override for previewing both appearances on the fly.
+  const effectiveTheme = snapshot
+    ? { ...snapshot.theme, ...(schemeOverride ? { colorScheme: schemeOverride } : {}) }
+    : { accentColor: accent }
+  const stage = resolveTheme(effectiveTheme)
+
   return (
     <div className="flex flex-col h-screen bg-[#0A0A0B] text-white">
       {/* Toolbar */}
@@ -165,6 +178,26 @@ export default function PaywallPreviewPage({ params }: { params: Promise<{ id: s
         </span>
 
         <div className="flex-1" />
+
+        {/* Appearance override */}
+        <div className="flex rounded-lg border border-white/8 overflow-hidden">
+          {([
+            { key: "light", icon: Sun },
+            { key: "dark", icon: Moon },
+          ] as const).map(({ key, icon: Icon }) => {
+            const active = (schemeOverride ?? snapshot?.theme.colorScheme ?? "dark") === key
+            return (
+              <button
+                key={key}
+                onClick={() => setSchemeOverride(key)}
+                className={`px-2.5 py-1.5 transition-colors ${active ? "bg-white/8 text-white" : "text-[#52525B] hover:text-[#A1A1AA]"}`}
+                title={key === "light" ? "Clair" : "Sombre"}
+              >
+                <Icon className="w-3.5 h-3.5" />
+              </button>
+            )
+          })}
+        </div>
 
         {/* Device toggle */}
         <div className="flex rounded-lg border border-white/8 overflow-hidden">
@@ -226,12 +259,12 @@ export default function PaywallPreviewPage({ params }: { params: Promise<{ id: s
               </div>
             </div>
             {/* Faux host page behind the paywall, so a modal overlay reads correctly */}
-            <div className="relative h-[calc(100%-40px)] bg-gradient-to-br from-[#1a1a2e] to-[#16213e] overflow-hidden">
+            <div className="relative h-[calc(100%-40px)] overflow-hidden" style={{ background: stage.pageGradient ?? stage.pageBg }}>
               {hasBlocks ? (
                 <BlocksPreview
                   blocks={snapshot.blocks}
                   plans={snapshot.plans}
-                  theme={snapshot.theme}
+                  theme={effectiveTheme}
                   displayMode={snapshot.displayMode}
                   device={device}
                   currency={(snapshot.config?.currency as string) ?? "USD"}
