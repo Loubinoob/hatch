@@ -21,6 +21,7 @@ interface Props {
   onClose?:      () => void
   device?:       "mobile" | "desktop"
   highlightId?:  string | null
+  currency?:     string
 }
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -47,7 +48,7 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string; style?:
   zap:    Zap, heart: Heart, award: Award, crown: Crown, star: Star, shield: Shield,
 }
 
-export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayMode, onClose, device = "desktop", highlightId = null }: Props) {
+export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayMode, onClose, device = "desktop", highlightId = null, currency = "USD" }: Props) {
   const plans = rawPlans.slice().sort((a, b) => (a.price_monthly ?? 0) - (b.price_monthly ?? 0))
   const [yearly, setYearly] = useState(false)
   const [openFaq, setOpenFaq] = useState<number | null>(null)
@@ -67,11 +68,14 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
   const accent    = theme.accentColor ?? "#6366F1"
   const font      = FONTS[theme.fontFamily ?? "system"]
   const btnRadius = RADIUS[theme.buttonShape ?? "rounded"]
-  const sym       = CURRENCY_SYMBOLS["USD"]
+  const sym       = CURRENCY_SYMBOLS[currency] ?? "$"
 
   function getPrice(plan: Plan) {
     if (yearly && plan.price_yearly > 0) return plan.price_yearly / 12 / 100
     return plan.price_monthly / 100
+  }
+  function formatPrice(v: number) {
+    return v.toFixed(v < 10 && v > 0 ? 2 : 0)
   }
   function getYearlySavings(plan: Plan) {
     if (plan.price_yearly <= 0 || plan.price_monthly <= 0) return null
@@ -126,18 +130,18 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
           <div className="hatch-block-hero" style={wrap}>
             {p.eyebrow != null && (
               <span
-                className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider px-3 py-1 rounded-full mb-3"
-                style={{ background: `${acc}22`, color: acc, letterSpacing: "0.08em" }}
+                className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase px-3 py-1 rounded-full mb-3.5"
+                style={{ background: `${acc}22`, color: acc, letterSpacing: "0.1em" }}
               >
                 {p.eyebrow as string}
               </span>
             )}
-            <h2 className={`font-bold text-white leading-[1.15] mb-2 ${device === "mobile" ? "text-[22px]" : "text-[28px]"}`}
-              style={{ letterSpacing: "-0.02em", textAlign: align === "left" ? "left" : "center" }}>
+            <h2 className={`font-bold text-white mb-2.5 ${device === "mobile" ? "text-[24px] leading-[1.18]" : "text-[32px] leading-[1.12]"}`}
+              style={{ letterSpacing: "-0.025em", textAlign: align === "left" ? "left" : "center" }}>
               {(p.headline as string) ?? "Unlock the full power"}
             </h2>
             {p.subheadline != null && (
-              <p className="text-[13px] text-white/65 leading-[1.5] max-w-md mx-auto">
+              <p className={`text-[14px] text-white/65 leading-[1.55] max-w-md ${align === "left" ? "" : "mx-auto"}`}>
                 {p.subheadline as string}
               </p>
             )}
@@ -171,47 +175,60 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
                 </span>
               </div>
             )}
-            <div className={`grid gap-3 ${isMobile ? "grid-cols-1" : plans.length === 2 ? "grid-cols-2" : "grid-cols-3"}`}>
+            <div className={`grid gap-3.5 items-stretch ${isMobile ? "grid-cols-1" : plans.length === 2 ? "grid-cols-2" : "grid-cols-3"}`}>
               {plans.slice(0, 3).map(plan => {
                 const popular = !!plan.is_popular
                 const savings = yearly && plan.price_yearly > 0 ? getYearlySavings(plan) : null
+                const price = getPrice(plan)
+                const isFree = (plan.price_monthly ?? 0) <= 0 && (plan.price_yearly ?? 0) <= 0
                 return (
                   <div
                     key={plan.id}
-                    className="relative rounded-2xl p-4 transition-all"
+                    className="relative flex flex-col rounded-2xl p-5 transition-all text-left"
                     style={popular ? {
-                      background: `linear-gradient(180deg, ${acc}18, ${acc}06)`,
-                      border: `1.5px solid ${acc}55`,
-                      boxShadow: `0 0 0 1px ${acc}22, 0 12px 32px -8px ${acc}40`,
+                      background: `linear-gradient(180deg, ${acc}22, ${acc}08)`,
+                      border: `1.5px solid ${acc}66`,
+                      boxShadow: `0 0 0 1px ${acc}1f, 0 18px 44px -14px ${acc}66`,
                     } : {
-                      background: "rgba(255,255,255,0.03)",
+                      background: "rgba(255,255,255,0.025)",
                       border: "1.5px solid rgba(255,255,255,0.08)",
                     }}
                   >
                     {popular && (
-                      <div className="absolute -top-2.5 left-1/2 -translate-x-1/2 px-2.5 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider"
-                        style={{ background: acc, color: "#fff", letterSpacing: "0.1em" }}>
+                      <div className="absolute -top-2.5 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-[9px] font-bold uppercase whitespace-nowrap"
+                        style={{ background: acc, color: "#fff", letterSpacing: "0.08em", boxShadow: `0 4px 14px ${acc}77` }}>
                         ★ Most Popular
                       </div>
                     )}
-                    <p className="text-[12px] font-semibold text-white/90 mt-1 mb-1">{plan.name}</p>
-                    <div className="flex items-baseline gap-1 mb-3">
-                      <span className="text-[26px] font-bold text-white tracking-tight"
-                        style={{ fontFeatureSettings: '"tnum"' }}>
-                        {sym}{getPrice(plan).toFixed(getPrice(plan) < 10 ? 2 : 0)}
-                      </span>
-                      <span className="text-[10px] text-white/45">/mo</span>
-                      {savings != null && savings > 0 && (
-                        <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded"
-                          style={{ background: `${acc}22`, color: acc }}>
-                          Save {savings}%
-                        </span>
+                    <p className="text-[12px] font-semibold text-white/90 mb-2" style={{ marginTop: popular ? "6px" : 0 }}>{plan.name}</p>
+                    <div className="flex items-baseline gap-1">
+                      {isFree ? (
+                        <span className="text-[30px] font-bold text-white tracking-tight leading-none">Free</span>
+                      ) : (
+                        <>
+                          <span className="text-[30px] font-bold text-white tracking-tight leading-none" style={{ fontFeatureSettings: '"tnum"' }}>
+                            {sym}{formatPrice(price)}
+                          </span>
+                          <span className="text-[11px] text-white/45 font-medium">/mo</span>
+                        </>
                       )}
                     </div>
-                    <ul className="space-y-1.5 mb-4">
-                      {(plan.features ?? []).slice(0, 4).map((f, i) => (
-                        <li key={i} className="flex items-start gap-2 text-[11px] text-white/70 leading-[1.4]">
-                          <Check className="w-3 h-3 mt-0.5 flex-shrink-0" style={{ color: acc }} strokeWidth={3} />
+                    {/* Reserved line for billing context — keeps card heights aligned */}
+                    <div className="h-5 mt-1 mb-3 flex items-center gap-1.5">
+                      {savings != null && savings > 0 ? (
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded" style={{ background: `${acc}22`, color: acc }}>
+                          Save {savings}%
+                        </span>
+                      ) : yearly && plan.price_yearly > 0 ? (
+                        <span className="text-[9.5px] text-white/40">billed {sym}{Math.round(plan.price_yearly / 100)}/yr</span>
+                      ) : null}
+                    </div>
+                    <ul className="space-y-2 mb-5 flex-1">
+                      {(plan.features ?? []).slice(0, 5).map((f, i) => (
+                        <li key={i} className="flex items-start gap-2 text-[11px] text-white/72 leading-[1.45]">
+                          <span className="flex items-center justify-center w-[15px] h-[15px] rounded-full flex-shrink-0 mt-px" style={{ background: `${acc}22` }}>
+                            <Check className="w-2.5 h-2.5" style={{ color: acc }} strokeWidth={3} />
+                          </span>
                           <span>{f}</span>
                         </li>
                       ))}
@@ -219,10 +236,11 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
                     <button
                       className="w-full py-2.5 text-[11px] font-semibold transition-all"
                       style={{
-                        background: popular ? acc : "rgba(255,255,255,0.08)",
+                        background: popular ? acc : "rgba(255,255,255,0.06)",
                         color: popular ? "#fff" : "rgba(255,255,255,0.92)",
                         borderRadius: btnRadius,
-                        boxShadow: popular ? `0 4px 12px ${acc}55` : "none",
+                        border: popular ? "none" : "1px solid rgba(255,255,255,0.1)",
+                        boxShadow: popular ? `0 6px 18px ${acc}66` : "none",
                       }}
                     >
                       {ctaCopy}
@@ -433,27 +451,30 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
 
       // ─── VIDEO ─────────────────────────────────────────────────────────────
       case "video": {
+        const hasUrl = !!p.url
         return (
           <div className="hatch-block-video" style={wrap}>
             {p.title != null && (
-              <p className="text-[11px] text-white/65 mb-2 text-center">{p.title as string}</p>
+              <p className="text-[12px] font-medium text-white/70 mb-2.5 text-center">{p.title as string}</p>
             )}
-            <div className="rounded-xl overflow-hidden aspect-video flex items-center justify-center relative"
-              style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
-              {p.url
+            <div className="rounded-2xl overflow-hidden aspect-video relative"
+              style={{
+                border: "1px solid rgba(255,255,255,0.08)",
+                background: hasUrl ? "#000" : "radial-gradient(120% 120% at 50% 0%, rgba(255,255,255,0.07), rgba(255,255,255,0.015))",
+              }}>
+              {hasUrl
                 ? <iframe
                     src={String(p.url).replace("watch?v=", "embed/")}
-                    className="w-full h-full"
+                    className="absolute inset-0 w-full h-full"
                     allowFullScreen
                   />
-                : <>
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="w-12 h-12 rounded-full flex items-center justify-center"
-                        style={{ background: `${acc}33`, border: `2px solid ${acc}` }}>
-                        <span className="text-base" style={{ color: acc }}>▶</span>
-                      </div>
+                : <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5">
+                    <div className="w-14 h-14 rounded-full flex items-center justify-center"
+                      style={{ background: `${acc}22`, border: `1.5px solid ${acc}`, boxShadow: `0 8px 24px -6px ${acc}66` }}>
+                      <span className="text-lg ml-0.5" style={{ color: acc }}>▶</span>
                     </div>
-                  </>
+                    <span className="text-[10px] text-white/35 uppercase tracking-wider">Video preview</span>
+                  </div>
               }
             </div>
           </div>
@@ -527,7 +548,7 @@ export default function BlocksPreview({ blocks, plans: rawPlans, theme, displayM
             <X className="w-3.5 h-3.5 text-white/60" />
           </button>
         )}
-        <div className={`mx-auto py-6 px-2 ${device === "mobile" ? "max-w-[400px]" : "max-w-xl"}`}>
+        <div className={`mx-auto py-8 px-2 ${device === "mobile" ? "max-w-[400px]" : "max-w-[640px]"}`}>
           {content}
         </div>
       </div>

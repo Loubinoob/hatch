@@ -926,6 +926,32 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   const locs = form.localizations ?? {}
   const accentColor = (form.design as Record<string, string>)?.accentColor ?? "#6366F1"
 
+  // Open a full-page preview in a new tab. We stash the current (possibly unsaved)
+  // builder state to localStorage so the preview reflects live edits even if the
+  // last DB save dropped columns; the preview page falls back to the DB otherwise.
+  function openPreview() {
+    try {
+      const previewPlans = selectedPlans.length > 0 ? selectedPlans : plans.slice(0, 3)
+      const snapshot = {
+        id,
+        savedAt: Date.now(),
+        name: form.name ?? "Paywall",
+        blocks: form.blocks ?? [],
+        plans: previewPlans,
+        theme: {
+          accentColor,
+          fontFamily: form.font_family ?? "system",
+          buttonShape: form.button_shape ?? "rounded",
+          overlayOpacity: form.overlay_opacity ?? 65,
+        },
+        displayMode: form.display_mode ?? "modal",
+        config: form,
+      }
+      localStorage.setItem(`hatch-preview-${id}`, JSON.stringify(snapshot))
+    } catch { /* localStorage unavailable — preview falls back to saved DB state */ }
+    window.open(`/preview/${id}`, "_blank", "noopener")
+  }
+
   return (
     <div className="flex h-screen bg-[#0A0A0B]">
       {/* Left Panel */}
@@ -2076,6 +2102,15 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
       <div className="flex-1 flex flex-col bg-[#0A0A0B] overflow-hidden">
         {/* Viewport toolbar */}
         <div className="flex items-center justify-center gap-2 py-3 border-b border-white/6 relative">
+          {/* Full-page preview */}
+          <button
+            onClick={openPreview}
+            className="absolute left-4 flex items-center gap-1.5 text-[11px] font-medium text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/15 px-2.5 py-1.5 rounded-lg transition-colors"
+            title="Ouvrir l'aperçu plein écran dans un nouvel onglet"
+          >
+            <Eye className="w-3.5 h-3.5" />
+            Aperçu
+          </button>
           {VIEWPORTS.map(({ key, icon: Icon }) => (
             <button
               key={key}
@@ -2132,6 +2167,7 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                   displayMode={form.display_mode ?? "modal"}
                   device={previewDevice}
                   highlightId={selectedBlockId}
+                  currency={form.currency ?? "USD"}
                 />
               ) : (
                 <PaywallPreview

@@ -1002,11 +1002,59 @@
     var wrap = blockWrapperStyle(props, '24px')
     var align = props.alignment || 'center'
     var html = '<div class="hatch-block-hero" style="' + wrap + '">'
-    if (props.eyebrow) html += '<span style="display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:4px 12px;border-radius:999px;margin-bottom:12px;background:' + a + '22;color:' + a + '">' + esc(props.eyebrow) + '</span>'
-    html += '<h2 class="hatch-headline" style="font-size:26px;font-weight:700;letter-spacing:-0.02em;line-height:1.15;margin:0 0 10px;text-align:' + (align === 'left' ? 'left' : 'center') + '">' + esc(props.headline || 'Unlock full access') + '</h2>'
-    if (props.subheadline) html += '<p class="hatch-sub" style="margin:0 auto;font-size:13px;line-height:1.5;max-width:480px;color:var(--hatch-sub-text,rgba(255,255,255,0.65))">' + esc(props.subheadline) + '</p>'
+    if (props.eyebrow) html += '<span style="display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;padding:4px 12px;border-radius:999px;margin-bottom:14px;background:' + a + '22;color:' + a + '">' + esc(props.eyebrow) + '</span>'
+    html += '<h2 class="hatch-headline" style="font-size:clamp(24px,5.5vw,32px);font-weight:700;letter-spacing:-0.025em;line-height:1.13;margin:0 0 10px;text-align:' + (align === 'left' ? 'left' : 'center') + '">' + esc(props.headline || 'Unlock full access') + '</h2>'
+    if (props.subheadline) html += '<p class="hatch-sub" style="margin:' + (align === 'left' ? '0' : '0 auto') + ';font-size:14px;line-height:1.55;max-width:480px;color:var(--hatch-sub-text,rgba(255,255,255,0.65))">' + esc(props.subheadline) + '</p>'
     html += '</div>'
     return html
+  }
+
+  // Block `plans` renderer — kept in visual parity with the React BlocksPreview
+  // premium cards (equal-height flex cards, floating popular badge, left-aligned
+  // content). Cards keep class "hatch-plan" + data-plan-id (hover tracking) and a
+  // ".hatch-price" element (analytics reads the shown price); CTA keeps data-checkout.
+  function fmtPlanPrice(v) { return v.toFixed(v < 10 && v > 0 ? 2 : 0) }
+
+  function buildBlockPlanCard(plan, a, sym, ctaCopy, yearly) {
+    var popular = !!plan.is_popular
+    var isFree = (plan.price_monthly || 0) <= 0 && (plan.price_yearly || 0) <= 0
+    var price = (yearly && plan.price_yearly > 0) ? (plan.price_yearly / 12 / 100) : (plan.price_monthly / 100)
+    var savings = null
+    if (yearly && plan.price_yearly > 0 && plan.price_monthly > 0) {
+      var mt = plan.price_monthly * 12
+      savings = Math.round((mt - plan.price_yearly) / mt * 100)
+    }
+    var cardStyle = popular
+      ? 'background:linear-gradient(180deg,' + a + '22,' + a + '08);border:1.5px solid ' + a + '66;box-shadow:0 0 0 1px ' + a + '1f,0 18px 44px -14px ' + a + '66'
+      : 'background:rgba(255,255,255,0.025);border:1.5px solid rgba(255,255,255,0.08)'
+    var h = '<div class="hatch-plan" data-plan-id="' + plan.id + '" style="position:relative;display:flex;flex-direction:column;text-align:left;border-radius:16px;padding:20px;cursor:pointer;box-sizing:border-box;' + cardStyle + '">'
+    if (popular) h += '<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);white-space:nowrap;padding:4px 12px;border-radius:999px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:' + a + ';color:#fff;box-shadow:0 4px 14px ' + a + '77">★ Most Popular</div>'
+    h += '<p style="font-size:12px;font-weight:600;margin:' + (popular ? '6px' : '0') + ' 0 8px;color:var(--hatch-text,rgba(255,255,255,0.9))">' + esc(plan.name) + '</p>'
+    h += '<div style="display:flex;align-items:baseline;gap:4px">'
+    if (isFree) {
+      h += '<span class="hatch-price" style="font-size:30px;font-weight:700;letter-spacing:-0.02em;line-height:1;color:var(--hatch-text,#fff)">Free</span>'
+    } else {
+      h += '<span class="hatch-price" style="font-size:30px;font-weight:700;letter-spacing:-0.02em;line-height:1;color:var(--hatch-text,#fff)">' + esc(sym) + fmtPlanPrice(price) + '</span><span style="font-size:11px;font-weight:500;color:var(--hatch-sub-text,rgba(255,255,255,0.45))">/mo</span>'
+    }
+    h += '</div>'
+    h += '<div style="height:20px;margin:4px 0 12px;display:flex;align-items:center;gap:6px">'
+    if (savings != null && savings > 0) h += '<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;background:' + a + '22;color:' + a + '">Save ' + savings + '%</span>'
+    else if (yearly && plan.price_yearly > 0) h += '<span style="font-size:9.5px;color:var(--hatch-sub-text,rgba(255,255,255,0.4))">billed ' + esc(sym) + Math.round(plan.price_yearly / 100) + '/yr</span>'
+    h += '</div>'
+    h += '<ul style="list-style:none;margin:0 0 20px;padding:0;display:flex;flex-direction:column;gap:8px;flex:1">'
+    ;(plan.features || []).slice(0, 5).forEach(function(f) {
+      h += '<li style="display:flex;align-items:flex-start;gap:8px;font-size:11px;line-height:1.45;color:var(--hatch-sub-text,rgba(255,255,255,0.72))">'
+        + '<span style="display:flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;flex-shrink:0;margin-top:1px;background:' + a + '22">'
+        + '<svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="' + a + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        + '</span><span>' + esc(f) + '</span></li>'
+    })
+    h += '</ul>'
+    var ctaStyle = popular
+      ? 'background:' + a + ';color:#fff;border:none;box-shadow:0 6px 18px ' + a + '66'
+      : 'background:rgba(255,255,255,0.06);color:var(--hatch-text,rgba(255,255,255,0.92));border:1px solid rgba(255,255,255,0.1)'
+    h += '<button class="hatch-cta" data-checkout="' + plan.id + '" style="width:100%;padding:11px;margin-top:0;border-radius:var(--hatch-btn-radius,10px);cursor:pointer;font-size:11px;font-weight:600;transition:opacity 0.15s;' + ctaStyle + '">' + esc(ctaCopy) + '</button>'
+    h += '</div>'
+    return h
   }
 
   function renderBlock_plans(props, plans, acc, config, yearly) {
@@ -1014,13 +1062,15 @@
     var a = blockAccent(props, acc)
     var ctaCopy = props.ctaCopy || config.cta_copy || 'Get started'
     var yEnabled = (props.yearlyToggle !== false) && config.show_yearly_toggle && plans.some(function(p) { return p.price_yearly > 0 })
+    var sym = CURRENCY_SYMBOLS[config.currency || 'USD'] || '$'
     var wrap = blockWrapperStyle(props, '16px')
+    var sorted = plans.slice().sort(function(a2, b2) { return (a2.price_monthly || 0) - (b2.price_monthly || 0) }).slice(0, 3)
+    var cols = sorted.length >= 3 ? 3 : (sorted.length === 2 ? 2 : 1)
     var html = '<div class="hatch-block-plans" style="' + wrap + '">'
     if (yEnabled) html += buildYearlyToggle(yearly, config.yearly_discount_percent)
-    // Use same config but override cta_copy + accent
-    var cfgOverride = Object.assign({}, config, { cta_copy: ctaCopy })
-    html += buildPlans(plans, cfgOverride, a, yearly)
-    html += '</div>'
+    html += '<div style="display:grid;gap:14px;align-items:stretch;grid-template-columns:repeat(' + cols + ',minmax(0,1fr))">'
+    sorted.forEach(function(plan) { html += buildBlockPlanCard(plan, a, sym, ctaCopy, yearly) })
+    html += '</div></div>'
     return html
   }
 
@@ -1150,16 +1200,25 @@
       + '</div></div>'
   }
 
-  function renderBlock_video(props) {
+  function renderBlock_video(props, acc) {
     if (isHidden(props)) return ''
+    var a = blockAccent(props, acc)
     var wrap = blockWrapperStyle(props, '20px')
-    if (!props.url) return '<div style="padding:8px 16px;text-align:center;font-size:10px;color:rgba(255,255,255,0.3)">(Video block — add URL in editor)</div>'
-    var src = String(props.url).replace('watch?v=', 'embed/')
     var html = '<div class="hatch-block-video" style="' + wrap + '">'
-    if (props.title) html += '<p style="font-size:11px;color:var(--hatch-sub-text,rgba(255,255,255,0.65));text-align:center;margin:0 0 8px">' + esc(props.title) + '</p>'
-    html += '<div style="position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.08)">'
-      + '<iframe src="' + esc(src) + '" style="position:absolute;top:0;left:0;width:100%;height:100%" frameborder="0" allowfullscreen></iframe>'
-      + '</div></div>'
+    if (props.title) html += '<p style="font-size:12px;font-weight:500;color:var(--hatch-sub-text,rgba(255,255,255,0.7));text-align:center;margin:0 0 10px">' + esc(props.title) + '</p>'
+    if (props.url) {
+      var src = String(props.url).replace('watch?v=', 'embed/')
+      html += '<div style="position:relative;padding-bottom:56.25%;height:0;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);background:#000">'
+        + '<iframe src="' + esc(src) + '" style="position:absolute;top:0;left:0;width:100%;height:100%" frameborder="0" allowfullscreen></iframe></div>'
+    } else {
+      html += '<div style="position:relative;padding-bottom:56.25%;height:0;border-radius:16px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);background:radial-gradient(120% 120% at 50% 0%,rgba(255,255,255,0.07),rgba(255,255,255,0.015))">'
+        + '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px">'
+        + '<div style="width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:' + a + '22;border:1.5px solid ' + a + ';box-shadow:0 8px 24px -6px ' + a + '66">'
+        + '<span style="font-size:18px;color:' + a + ';margin-left:2px">▶</span></div>'
+        + '<span style="font-size:10px;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.08em">Video preview</span>'
+        + '</div></div>'
+    }
+    html += '</div>'
     return html
   }
 
@@ -1201,7 +1260,7 @@
       case 'faq':          return renderBlock_faq(p)
       case 'urgency':      return renderBlock_urgency(p, acc)
       case 'guarantee':    return renderBlock_guarantee(p)
-      case 'video':        return renderBlock_video(p)
+      case 'video':        return renderBlock_video(p, acc)
       case 'stats':        return renderBlock_stats(p, acc)
       case 'footer':       return renderBlock_footer(p)
       default:             return ''
@@ -1227,7 +1286,7 @@
       // Fullscreen: overlay fills viewport, modal is a scrollable column
       overlay.style.cssText = 'position:fixed;inset:0;z-index:999998;overflow-y:auto;background:#0A0A0F;animation:hatchFadeIn 0.2s ease'
       modal.className = 'hatch-block-fullscreen'
-      modal.style.cssText = 'max-width:600px;margin:0 auto;padding:24px 0 40px;position:relative'
+      modal.style.cssText = 'max-width:640px;margin:0 auto;padding:32px 0 40px;position:relative'
       modal.innerHTML = (config.closeable !== false
         ? '<button id="hatch-close" style="position:sticky;top:12px;float:right;margin:0 12px 0 0;z-index:10">✕</button>'
         : '')
