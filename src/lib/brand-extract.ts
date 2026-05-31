@@ -31,7 +31,15 @@ function resolveUrl(href: string, base: string): string | null {
   try { return new URL(href, base).toString() } catch { return null }
 }
 
-/** Parse #rgb / #rrggbb / rgb()/rgba() into [r,g,b] (0-255), or null. */
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  s /= 100; l /= 100
+  const k = (n: number) => (n + h / 30) % 12
+  const a = s * Math.min(l, 1 - l)
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)]
+}
+
+/** Parse #rgb / #rrggbb / rgb()/rgba() / hsl()/hsla() into [r,g,b] (0-255), or null. */
 function toRgb(c: string): [number, number, number] | null {
   const s = c.trim().toLowerCase()
   let m = s.match(/^#([0-9a-f]{3})$/)
@@ -40,6 +48,20 @@ function toRgb(c: string): [number, number, number] | null {
   if (m) { const h = m[1]; return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)] }
   m = s.match(/^rgba?\(\s*([0-9.]+)[\s,]+([0-9.]+)[\s,]+([0-9.]+)/)
   if (m) return [Math.round(+m[1]), Math.round(+m[2]), Math.round(+m[3])]
+  m = s.match(/^hsla?\(\s*([0-9.]+)(?:deg)?[\s,]+([0-9.]+)%[\s,]+([0-9.]+)%/)
+  if (m) return hslToRgb(+m[1], +m[2], +m[3])
+  return null
+}
+
+/** Resolve a CSS value to a hex colour. Handles hex/rgb/hsl AND the shadcn/Tailwind
+ *  convention of storing colours as bare HSL channels (e.g. `--primary: 73 98% 53%`). */
+function resolveCssColor(val: string): string | null {
+  const v = val.trim().replace(/!important$/i, "").trim()
+  const direct = toRgb(v)
+  if (direct) return toHex(direct)
+  // shadcn triple: "H S% L%"  (also tolerates "H, S%, L%")
+  const m = v.match(/^([0-9.]+)(?:deg)?[\s,]+([0-9.]+)%[\s,]+([0-9.]+)%$/)
+  if (m) return toHex(hslToRgb(+m[1], +m[2], +m[3]))
   return null
 }
 
@@ -64,7 +86,21 @@ function firstMatch(html: string, re: RegExp): string {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
-export function extractBrandSignals(html: string, baseUrl: string): BrandSignals {
+/** Stylesheet URLs referenced by the page (so callers can fetch + mine the
+ *  real CSS bundles — essential for client-rendered SPAs whose HTML is a shell). */
+export function collectStylesheetUrls(html: string, baseUrl: string): string[] {
+  const urls = new Set<string>()
+  for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
+    const tag = m[0]
+    if (!/rel=["'][^"']*stylesheet/i.test(tag)) continue
+    const href = tag.match(/href=["']([^"']+)["']/i)?.[1]
+    const abs = href ? resolveUrl(href, baseUrl) : null
+    if (abs) urls.add(abs)
+  }
+  return [...urls].slice(0, 4)
+}
+
+export function extractBrandSignals(html: string, baseUrl: string, extraCss = ""): BrandSignals {
   const title = firstMatch(html, /<title[^>]*>([\s\S]*?)<\/title>/i)
   const description =
     firstMatch(html, /<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i) ||
@@ -80,38 +116,55 @@ export function extractBrandSignals(html: string, baseUrl: string): BrandSignals
   const iconLink = firstMatch(html, /<link[^>]+rel=["'][^"']*\bicon\b[^"']*["'][^>]+href=["']([^"']+)["']/i)
   const logoUrl = resolveUrl(appleIcon, baseUrl) || ogImage || resolveUrl(iconLink, baseUrl)
 
-  // Collect <style> blocks + style="" attributes for colour / font / radius mining.
+  // Collect <style> blocks + style="" attributes + any fetched external CSS for
+  // colour / font / radius mining. extraCss is the linked stylesheet bundles.
   const styleBlocks = (html.match(/<style[\s\S]*?<\/style>/gi) ?? []).join("\n")
   const inlineStyles = (html.match(/style=["'][^"']*["']/gi) ?? []).join("\n")
-  const styleSoup = styleBlocks + "\n" + inlineStyles
+  const cssText = styleBlocks + "\n" + extraCss          // real CSS (head + bundles)
+  const styleSoup = cssText + "\n" + inlineStyles
 
-  // CSS custom properties that look brand-relevant.
+  // ── CSS custom properties — resolve shadcn/Tailwind HSL-channel vars too ──
+  // (e.g. `--primary: 73 98% 53%`, the dominant convention for SPA design systems.)
+  // Capture per-selector so we can prefer the .dark theme block when relevant.
+  const rootVars: Record<string, string> = {}
+  const darkVars: Record<string, string> = {}
+  for (const block of cssText.matchAll(/(:root|\.dark|\[data-theme=["']?dark["']?\])([^{]*)\{([^}]*)\}/gi)) {
+    const target = /dark/i.test(block[1]) ? darkVars : rootVars
+    for (const v of block[3].matchAll(/(--[\w-]+)\s*:\s*([^;]+)/g)) {
+      const name = v[1].toLowerCase().trim()
+      if (!(name in target)) target[name] = v[2].trim().slice(0, 60)
+    }
+  }
+  // Does the page default to dark? (class/data-theme on <html>/<body>, or meta)
+  const htmlDark = /<html[^>]*\b(?:class|data-theme)=["'][^"']*\bdark\b/i.test(html) ||
+    /<body[^>]*\bclass=["'][^"']*\bdark\b/i.test(html) ||
+    /<meta[^>]+name=["']color-scheme["'][^>]+content=["'][^"']*dark/i.test(html)
+  const vars = { ...rootVars, ...(htmlDark ? darkVars : {}) }
+
   const cssVars: Record<string, string> = {}
-  for (const m of styleSoup.matchAll(/(--[\w-]*(?:primary|accent|brand|theme|bg|background|foreground|surface|text|color)[\w-]*)\s*:\s*([^;}{]+)/gi)) {
-    const name = m[1].toLowerCase().trim()
-    const val = m[2].trim().slice(0, 40)
-    if (!cssVars[name]) cssVars[name] = val
+  for (const [name, val] of Object.entries(vars)) {
+    if (!/(primary|accent|brand|theme|bg|background|foreground|surface|ring|card|muted|secondary|border|text|color)/.test(name)) continue
+    const hex = resolveCssColor(val)
+    if (hex && Object.keys(cssVars).length < 20) cssVars[name] = hex
   }
 
-  // Frequency-rank every colour token.
+  // ── Frequency-rank colours: literals (hex/rgb/hsl) + resolved vars (weighted) ──
   const counts = new Map<string, number>()
-  for (const m of styleSoup.matchAll(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b|rgba?\([^)]+\)/g)) {
-    const rgb = toRgb(m[0])
-    if (!rgb) continue
-    const hex = toHex(rgb)
-    counts.set(hex, (counts.get(hex) ?? 0) + 1)
+  const bump = (hex: string, n = 1) => counts.set(hex, (counts.get(hex) ?? 0) + n)
+  for (const m of styleSoup.matchAll(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b|rgba?\([^)]+\)|hsla?\([^)]+\)/g)) {
+    const rgb = toRgb(m[0]); if (rgb) bump(toHex(rgb))
   }
-  const palette = [...counts.entries()]
-    .map(([color, count]) => ({ color, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 16)
+  for (const hex of Object.values(cssVars)) bump(hex, 2) // declared tokens carry brand weight
+  const palette = [...counts.entries()].map(([color, count]) => ({ color, count })).sort((a, b) => b.count - a.count).slice(0, 16)
 
-  // Accent guess = most frequent reasonably-saturated, mid-luminance colour.
-  const accentGuess = palette
-    .map(p => ({ p, rgb: toRgb(p.color)! }))
-    .filter(({ rgb }) => saturation(rgb) > 0.25 && relLuminance(rgb) > 0.05 && relLuminance(rgb) < 0.85)
-    .sort((a, b) => b.p.count - a.p.count)[0]?.p.color
-    ?? (themeColor && toRgb(themeColor) ? themeColor : null)
+  // ── Accent: the brand's DECLARED primary wins over any frequency heuristic ──
+  const brandVar = ["--primary", "--accent", "--brand", "--color-primary", "--primary-color", "--ring", "--theme-primary"]
+    .map(n => cssVars[n]).find(Boolean)
+  const accentGuess = brandVar
+    ?? palette.map(p => ({ p, rgb: toRgb(p.color)! }))
+        .filter(({ rgb }) => saturation(rgb) > 0.3 && relLuminance(rgb) > 0.04 && relLuminance(rgb) < 0.92)
+        .sort((a, b) => b.p.count - a.p.count)[0]?.p.color
+    ?? (themeColor && toRgb(themeColor) ? toHex(toRgb(themeColor)!) : null)
 
   // Fonts.
   const fontCounts = new Map<string, number>()
@@ -120,10 +173,12 @@ export function extractBrandSignals(html: string, baseUrl: string): BrandSignals
     if (first && !first.startsWith("var(") && first.length < 40) fontCounts.set(first, (fontCounts.get(first) ?? 0) + 1)
   }
   const fonts = [...fontCounts.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]).slice(0, 6)
-  const fontBlob = fonts.join(" ")
+  // Bucket from the MOST COMMON body font (not any occurrence) — avoids picking
+  // "mono" just because the bundle declares a monospace stack for code/numbers.
+  const topFont = fonts[0] || ""
   const fontFamily: BrandSignals["fontFamily"] =
-    /(mono|courier|consolas|menlo|jetbrains|fira code|source code)/.test(fontBlob) ? "mono"
-    : /(serif|georgia|times|playfair|merriweather|lora|tiempos|charter|garamond)/.test(fontBlob) ? "serif"
+    /(mono|courier|consolas|menlo|jetbrains|fira code|source code)/.test(topFont) ? "mono"
+    : /(serif|georgia|times|playfair|merriweather|lora|tiempos|charter|garamond)/.test(topFont) ? "serif"
     : "system"
 
   // Border radius → button shape.
@@ -133,12 +188,22 @@ export function extractBrandSignals(html: string, baseUrl: string): BrandSignals
   const squarish = radii.length > 0 && radii.every(r => r.v <= 3)
   const buttonShape: BrandSignals["buttonShape"] = pillish ? "pill" : squarish ? "square" : "rounded"
 
-  // Light / dark from body/html background, else theme-color, else default light.
-  const bgRaw =
-    firstMatch(styleBlocks, /(?:^|[\s,{])(?:body|html)\b[^{]*\{[^}]*background(?:-color)?\s*:\s*([^;}{]+)/i) ||
-    firstMatch(html, /<body[^>]+style=["'][^"']*background(?:-color)?\s*:\s*([^;"']+)/i)
-  const bgRgb = toRgb(bgRaw) ?? (themeColor ? toRgb(themeColor) : null)
-  const colorScheme: BrandSignals["colorScheme"] = bgRgb ? (relLuminance(bgRgb) < 0.4 ? "dark" : "light") : "light"
+  // Light / dark: resolved --background var (already .dark-aware) → body bg →
+  // theme-color → palette dark-dominance fallback. Note: the runtime SDK chameleon
+  // is the authoritative match on the live page; this is the best build-time guess.
+  const bgHex =
+    cssVars["--background"] || cssVars["--card"] || cssVars["--bg"] ||
+    resolveCssColor(firstMatch(html, /<body[^>]+style=["'][^"']*background(?:-color)?\s*:\s*([^;"']+)/i)) ||
+    (themeColor && toRgb(themeColor) ? toHex(toRgb(themeColor)!) : "")
+  const bgRgb = bgHex ? toRgb(bgHex) : null
+  let colorScheme: BrandSignals["colorScheme"] = bgRgb ? (relLuminance(bgRgb) < 0.42 ? "dark" : "light") : "light"
+  // Fallback: if no bg signal but very-dark colours dominate the palette, lean dark.
+  if (!bgRgb && htmlDark) colorScheme = "dark"
+  else if (!bgRgb) {
+    const dark = palette.filter(p => { const r = toRgb(p.color); return r && relLuminance(r) < 0.15 }).reduce((s, p) => s + p.count, 0)
+    const light = palette.filter(p => { const r = toRgb(p.color); return r && relLuminance(r) > 0.85 }).reduce((s, p) => s + p.count, 0)
+    if (dark > light * 1.5) colorScheme = "dark"
+  }
 
   // Visible text for tone/category/copy inference.
   const bodyText = html

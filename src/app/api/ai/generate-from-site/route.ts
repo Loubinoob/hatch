@@ -4,7 +4,7 @@ import { createClient as createServiceClient } from "@supabase/supabase-js"
 import Anthropic from "@anthropic-ai/sdk"
 import { makeBlock } from "@/lib/blocks/utils"
 import type { BlockType } from "@/lib/blocks/types"
-import { extractBrandSignals, summariseSignals, type BrandSignals } from "@/lib/brand-extract"
+import { extractBrandSignals, collectStylesheetUrls, summariseSignals, type BrandSignals } from "@/lib/brand-extract"
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -89,6 +89,22 @@ async function fetchHtml(url: string): Promise<{ html: string; error?: string }>
   }
 }
 
+async function fetchStylesheets(urls: string[]): Promise<string> {
+  let total = ""
+  await Promise.all(urls.slice(0, 4).map(async u => {
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 4000)
+      const res = await fetch(u, { signal: controller.signal, headers: { "User-Agent": "Mozilla/5.0 (compatible; HatchBot/1.0)" } })
+      clearTimeout(timeout)
+      if (res.ok && (res.headers.get("content-type") ?? "").includes("css")) {
+        total += "\n" + (await res.text()).slice(0, 120000) // cap each bundle
+      }
+    } catch { /* skip unreachable stylesheet */ }
+  }))
+  return total.slice(0, 400000)
+}
+
 const HEX = /^#[0-9a-fA-F]{6}$/
 function clampScheme(v: unknown): "light" | "dark" { return v === "dark" ? "dark" : "light" }
 function clampFont(v: unknown): "system" | "serif" | "mono" { return v === "serif" || v === "mono" ? v : "system" }
@@ -132,7 +148,10 @@ export async function POST(request: Request) {
       if (error || !html) {
         return NextResponse.json({ error: `Impossible de charger cette URL (${error}). Vérifie qu'elle est publique.`, error_code: error }, { status: 422 })
       }
-      signals = extractBrandSignals(html, url)
+      // Follow linked CSS bundles — client-rendered SPAs (Lovable, Vite, etc.)
+      // keep their real design tokens in the stylesheet, not the HTML shell.
+      const extraCss = await fetchStylesheets(collectStylesheetUrls(html, url))
+      signals = extractBrandSignals(html, url, extraCss)
       signalsText = summariseSignals(signals)
     }
 
@@ -202,7 +221,9 @@ export async function POST(request: Request) {
       design,
       font_family: theme.fontFamily,
       button_shape: theme.buttonShape,
-      theme_mode: "manual", // the AI already matched the brand — use the generated theme verbatim
+      // Keep chameleon ON: the AI theme is the base/editor preview, but on the live
+      // site the SDK samples the real computed styles and matches them exactly.
+      theme_mode: "auto",
       updated_at: new Date().toISOString(),
     }).eq("id", paywall_id)
 

@@ -490,6 +490,19 @@
     return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
   }
 
+  // Derive the modal panel colour from the host's page background: lift a dark
+  // host slightly so cards/borders read; keep light hosts on a clean white panel.
+  function elevateSurface(rgbStr, dark) {
+    var m = (rgbStr || '').match(/[\d.]+/g)
+    if (!m || m.length < 3) return dark ? 'rgb(18,18,20)' : '#FFFFFF'
+    var r = +m[0], g = +m[1], b = +m[2]
+    if (dark) {
+      r = Math.round(r + (255 - r) * 0.07); g = Math.round(g + (255 - g) * 0.07); b = Math.round(b + (255 - b) * 0.07)
+      return 'rgb(' + r + ',' + g + ',' + b + ')'
+    }
+    return relativeLuminance(rgbStr) > 0.85 ? 'rgb(' + r + ',' + g + ',' + b + ')' : '#FFFFFF'
+  }
+
   function rgbToHsl(rgbStr) {
     var m = (rgbStr || '').match(/[\d.]+/g)
     if (!m || m.length < 3) return [0, 0, 50]
@@ -579,7 +592,11 @@
       var lum = relativeLuminance(bg)
       theme.isDark = lum < 0.4
       theme.surfaceBg = bg
-      theme.textColor = theme.isDark ? '#FFFFFF' : '#0A0A0B'
+      // Prefer the host's REAL text colour when it has decent contrast on its bg,
+      // so the paywall's type matches the app; fall back to safe white/near-black.
+      var realText = bodyStyle.color
+      theme.textColor = (realText && contrastRatio(relativeLuminance(realText), lum) >= 3.5)
+        ? realText : (theme.isDark ? '#FFFFFF' : '#0A0A0B')
       theme.accent = detectAccentColor()
       theme.radius = detectBorderRadius()
     } catch (e) {}
@@ -1302,10 +1319,27 @@
     var T = dark
       ? { pageBg: '#0A0A0F', surface: '#0F0F12', card: 'rgba(255,255,255,0.045)', border: 'rgba(255,255,255,0.09)', hairline: 'rgba(255,255,255,0.03)', text: '#FFFFFF', sub: 'rgba(255,255,255,0.66)' }
       : { pageBg: '#EEF0F4', surface: '#FFFFFF', card: 'rgba(12,14,20,0.028)', border: 'rgba(12,14,20,0.10)', hairline: 'rgba(12,14,20,0.025)', text: '#0B0B0F', sub: 'rgba(11,11,15,0.62)' }
-    var allowManualBg = !hasChameleon
-    var pageBg  = (allowManualBg && (design.backgroundGradient || design.background)) || T.pageBg
-    var surface = (allowManualBg && design.surface) || T.surface
-    var text    = (allowManualBg && design.textColor) || T.text
+    var pageBg, surface, text
+    if (hasChameleon) {
+      // Match the HOST's real, live computed colours so the paywall is indistinguishable.
+      var hostBg = config._chameleon_surface || T.pageBg
+      text = config._chameleon_text || T.text
+      pageBg = hostBg
+      surface = elevateSurface(hostBg, dark)
+      T = {
+        pageBg: hostBg,
+        surface: surface,
+        card: dark ? 'rgba(255,255,255,0.06)' : 'rgba(12,14,20,0.04)',
+        border: dark ? 'rgba(255,255,255,0.12)' : 'rgba(12,14,20,0.12)',
+        hairline: dark ? 'rgba(255,255,255,0.04)' : 'rgba(12,14,20,0.03)',
+        text: text,
+        sub: dark ? 'rgba(255,255,255,0.64)' : 'rgba(11,11,15,0.6)',
+      }
+    } else {
+      pageBg  = (design.backgroundGradient || design.background) || T.pageBg
+      surface = design.surface || T.surface
+      text    = design.textColor || T.text
+    }
 
     var modal = buildModalBase(config, acc)
 
