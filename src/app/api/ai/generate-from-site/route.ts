@@ -215,7 +215,7 @@ export async function POST(request: Request) {
     if (theme.backgroundGradient) design.backgroundGradient = theme.backgroundGradient; else delete design.backgroundGradient
     if (theme.surface) design.surface = theme.surface; else delete design.surface
 
-    await service.from("paywalls").update({
+    const { error: upErr } = await service.from("paywalls").update({
       blocks: hydratedBlocks,
       display_mode: displayMode,
       design,
@@ -226,6 +226,10 @@ export async function POST(request: Request) {
       theme_mode: "auto",
       updated_at: new Date().toISOString(),
     }).eq("id", paywall_id)
+    if (upErr) {
+      console.error("[generate-from-site] save failed:", upErr.message)
+      return NextResponse.json({ error: "Paywall generated but couldn't be saved: " + upErr.message }, { status: 500 })
+    }
 
     try {
       await service.from("agent_runs").insert({

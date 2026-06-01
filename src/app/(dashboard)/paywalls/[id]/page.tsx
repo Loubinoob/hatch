@@ -790,7 +790,9 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
       update("design", nd)
       if (th.fontFamily) update("font_family", th.fontFamily as "system" | "serif" | "mono")
       if (th.buttonShape) update("button_shape", th.buttonShape as "rounded" | "pill" | "square")
-      update("theme_mode", "manual")
+      // Match the server: keep chameleon ON so the live paywall auto-skins to the
+      // host. A later "Save draft" then persists "auto", not "manual".
+      update("theme_mode", "auto")
       update("blocks", data.blocks ?? [])
       update("display_mode", data.display_mode ?? "modal")
       setSelectedBlockId(null)

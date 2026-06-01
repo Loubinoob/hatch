@@ -158,11 +158,31 @@ Design the optimal paywall blocks for this product. Make the copy specific and c
       process.env.SUPABASE_SERVICE_ROLE_KEY!,
     )
 
-    await service.from("paywalls").update({
+    // Persist the FULL output — blocks, display_mode AND the theme — so nothing
+    // is lost on reload (the theme was previously only applied client-side).
+    const t = parsed.theme ?? {}
+    const accent = typeof t.accentColor === "string" && /^#[0-9a-fA-F]{6}$/.test(t.accentColor) ? t.accentColor : undefined
+    const font = ["system", "serif", "mono"].includes(t.fontFamily as string) ? t.fontFamily : undefined
+    const shape = ["rounded", "pill", "square"].includes(t.buttonShape as string) ? t.buttonShape : undefined
+
+    const existingDesign = (paywall.design ?? {}) as Record<string, string>
+    const design: Record<string, string> = { ...existingDesign }
+    if (accent) design.accentColor = accent
+
+    const update: Record<string, unknown> = {
       blocks: hydratedBlocks,
       display_mode: parsed.display_mode ?? "modal",
+      design,
       updated_at: new Date().toISOString(),
-    }).eq("id", paywall_id)
+    }
+    if (font) update.font_family = font
+    if (shape) update.button_shape = shape
+
+    const { error: upErr } = await service.from("paywalls").update(update).eq("id", paywall_id)
+    if (upErr) {
+      console.error("[generate-paywall] save failed:", upErr.message)
+      return NextResponse.json({ error: "Paywall generated but couldn't be saved: " + upErr.message }, { status: 500 })
+    }
 
     // Log to agent_runs
     try {
