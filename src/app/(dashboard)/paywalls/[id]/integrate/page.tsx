@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import {
   ChevronLeft, Copy, Check, Loader2, Zap, AlertTriangle,
   CheckCircle2, ExternalLink, RefreshCw, Code2, Users,
-  Activity, Sparkles, Globe, ChevronRight, Shield,
+  Activity, Sparkles, ChevronRight, Shield,
 } from "lucide-react"
 import Link from "next/link"
 import { toast } from "sonner"
@@ -97,6 +97,10 @@ export default function IntegratePage({ params }: { params: Promise<{ id: string
   const [sdkLive, setSdkLive] = useState<boolean | null>(null) // null = checking
   const [currentStep, setCurrentStep] = useState(0)
 
+  // Install hub choices
+  const [appearance, setAppearance] = useState<"inline" | "popup">("inline")
+  const [installStack, setInstallStack] = useState<"ai" | "html" | "react">("ai")
+
   // Step 2 — AI analysis
   const [appUrl, setAppUrl] = useState("")
   const [analyzing, setAnalyzing] = useState(false)
@@ -106,7 +110,24 @@ export default function IntegratePage({ params }: { params: Promise<{ id: string
   const [events, setEvents] = useState<SdkEvent[]>([])
   const [loadingEvents, setLoadingEvents] = useState(false)
 
-  const scriptSnippet = `<script async src="${getSdkScriptUrl()}" data-key="${apiKey || "pk_live_..."}"></script>`
+  // ── Install hub: tailor the copy to appearance × stack ──
+  const sdkUrl = getSdkScriptUrl()
+  const pid = paywall?.id ?? ""
+  const keyVal = apiKey || "pk_live_…"
+  const scriptTag = `<script async src="${sdkUrl}" data-key="${keyVal}"></script>`
+  const embedTag = `<div data-hatch="${pid}"></div>`
+  const installSnippets = {
+    htmlInline: `${scriptTag}\n\n<!-- Drop this exactly where the paywall should appear -->\n${embedTag}`,
+    htmlPopup: `${scriptTag}\n\n<!-- Open the paywall on a trigger (e.g. an Upgrade button) -->\n<button onclick="hatch.show('${pid}')">Upgrade</button>`,
+    reactInline: `// 1 · Load the SDK once (app/layout.tsx <head>, or index.html)\n${scriptTag}\n\n// 2 · Render the embed anywhere in your JSX:\n<div data-hatch="${pid}" />`,
+    reactPopup: `// 1 · Load the SDK once (app/layout.tsx <head>, or index.html)\n${scriptTag}\n\n// 2 · Open the paywall on an action:\n<button onClick={() => window.hatch?.show("${pid}")}>Upgrade</button>`,
+    aiInline: `Add the Hatch paywall to my app:\n\n1. In the HTML <head> (or app entry point), add this line exactly, unchanged:\n${scriptTag}\n\n2. Where the upgrade / pricing section should appear, insert this exactly:\n${embedTag}\n\nKeep the src and all data-* attributes exactly as written. The paywall styles itself to match my app automatically — don't add any CSS for it.`,
+    aiPopup: `Add the Hatch paywall to my app:\n\n1. In the HTML <head> (or app entry point), add this line exactly, unchanged:\n${scriptTag}\n\n2. When a user should be prompted to upgrade (clicking an "Upgrade" button, or hitting a usage limit), call this:\nhatch.show("${pid}")\n\nKeep the src and all data-* attributes exactly as written. The paywall styles itself to match my app automatically — don't add any CSS for it.`,
+  }
+  const activeSnippet =
+    installStack === "ai" ? (appearance === "inline" ? installSnippets.aiInline : installSnippets.aiPopup)
+    : installStack === "react" ? (appearance === "inline" ? installSnippets.reactInline : installSnippets.reactPopup)
+    : (appearance === "inline" ? installSnippets.htmlInline : installSnippets.htmlPopup)
 
   useEffect(() => { loadData() }, [paywallId])
 
@@ -250,34 +271,56 @@ export default function IntegratePage({ params }: { params: Promise<{ id: string
             {/* ── Step 0: Install SDK ── */}
             {currentStep === 0 && (
               <motion.div key="step0" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-                <h2 className="text-lg font-bold text-white mb-1">Install the SDK</h2>
-                <p className="text-sm text-[#71717A] mb-6">Add one script tag to your Lovable app. That&apos;s it.</p>
+                <h2 className="text-lg font-bold text-white mb-1">Add Hatch to your app</h2>
+                <p className="text-sm text-[#71717A] mb-6">Pick how it appears and how you build — then copy one thing. It auto-styles to match your app.</p>
 
                 <div className="space-y-6">
-                  {/* Lovable-specific instructions */}
-                  <div className="p-4 rounded-xl border border-indigo-500/20 bg-indigo-500/5">
-                    <div className="flex items-center gap-2 mb-3">
-                      <Globe className="w-4 h-4 text-indigo-400" />
-                      <p className="text-sm font-semibold text-white">In Lovable</p>
-                    </div>
-                    <ol className="space-y-2">
-                      {[
-                        "Open your Lovable project",
-                        "Go to Project Settings (top right gear icon)",
-                        'Find "Custom Scripts" or "Head scripts"',
-                        "Paste the snippet below and save",
-                      ].map((step, i) => (
-                        <li key={i} className="flex items-start gap-2.5 text-xs text-[#A1A1AA]">
-                          <span className="w-4 h-4 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-[10px] flex-shrink-0 mt-0.5">{i + 1}</span>
-                          {step}
-                        </li>
+                  {/* 1 · Appearance */}
+                  <div>
+                    <p className="text-[10px] text-[#71717A] mb-2 font-semibold uppercase tracking-wider">1 · How should it appear?</p>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      {([
+                        { key: "inline", title: "Inline embed", desc: "Sits in a page section — feels native, no pop-up" },
+                        { key: "popup", title: "Pop-up", desc: "Overlay on a trigger (click, limit, exit-intent)" },
+                      ] as const).map(o => (
+                        <button key={o.key} onClick={() => setAppearance(o.key)}
+                          className={`text-left p-3 rounded-xl border transition-all ${appearance === o.key ? "border-indigo-500/60 bg-indigo-500/10" : "border-white/8 bg-white/3 hover:bg-white/6"}`}>
+                          <p className="text-xs font-semibold text-white">{o.title}</p>
+                          <p className="text-[10px] text-[#71717A] mt-0.5 leading-snug">{o.desc}</p>
+                        </button>
                       ))}
-                    </ol>
+                    </div>
                   </div>
 
+                  {/* 2 · Stack */}
                   <div>
-                    <p className="text-xs text-[#71717A] mb-2 font-medium">Your install snippet</p>
-                    <CodeBlock code={scriptSnippet} language="html" />
+                    <p className="text-[10px] text-[#71717A] mb-2 font-semibold uppercase tracking-wider">2 · How do you build?</p>
+                    <div className="flex gap-1.5">
+                      {([
+                        { key: "ai", label: "AI builder" },
+                        { key: "html", label: "HTML" },
+                        { key: "react", label: "React / Next" },
+                      ] as const).map(o => (
+                        <button key={o.key} onClick={() => setInstallStack(o.key)}
+                          className={`flex-1 py-1.5 text-[11px] font-medium rounded-lg border transition-all ${installStack === o.key ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-300" : "border-white/6 bg-white/3 text-[#71717A] hover:text-white"}`}>
+                          {o.label}
+                        </button>
+                      ))}
+                    </div>
+                    {installStack === "ai" && <p className="text-[10px] text-[#52525B] mt-1.5">Lovable · Bolt · Cursor · v0 — paste the prompt below into your builder.</p>}
+                  </div>
+
+                  {/* 3 · The one thing to copy */}
+                  <div>
+                    <p className="text-xs text-[#71717A] mb-2 font-medium">
+                      {installStack === "ai" ? "3 · Paste this prompt into your AI builder" : "3 · Copy this snippet"}
+                    </p>
+                    <CodeBlock code={activeSnippet} language={installStack === "ai" ? "text" : "html"} />
+                    {installStack === "ai"
+                      ? <p className="text-[11px] text-[#52525B] mt-2">Your builder adds the script + paywall for you. Reload the preview — done in under a minute.</p>
+                      : appearance === "inline"
+                        ? <p className="text-[11px] text-[#52525B] mt-2">Add the script once, then drop <code className="font-mono text-indigo-400 bg-indigo-500/10 px-1 rounded">&lt;div data-hatch&gt;</code> wherever the paywall belongs.</p>
+                        : <p className="text-[11px] text-[#52525B] mt-2">Add the script once; call <code className="font-mono text-indigo-400 bg-indigo-500/10 px-1 rounded">hatch.show()</code> to open it.</p>}
                   </div>
 
                   {/* SDK status */}

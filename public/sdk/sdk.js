@@ -1108,6 +1108,15 @@
     return html
   }
 
+  // Map AI/editor icon names (lucide-style) to a glyph; keep emojis; else a check.
+  var FEATURE_GLYPHS = { check: '✓', sparkles: '✨', trending: '↗', 'trending-up': '↗', lock: '🔒', zap: '⚡', heart: '♥', award: '🏆', crown: '👑', star: '★', shield: '🛡', rocket: '🚀', bolt: '⚡', infinity: '∞' }
+  function featureGlyph(ic) {
+    if (!ic) return '✓'
+    var key = String(ic).toLowerCase().trim()
+    if (FEATURE_GLYPHS[key]) return FEATURE_GLYPHS[key]
+    return key.length <= 2 ? ic : '✓' // already an emoji/symbol, else neutral check
+  }
+
   function renderBlock_features(props, acc) {
     if (isHidden(props)) return ''
     var a = blockAccent(props, acc)
@@ -1118,7 +1127,7 @@
     html += '<ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px;text-align:left">'
     items.forEach(function(item) {
       html += '<li style="display:flex;align-items:flex-start;gap:10px;font-size:12px;line-height:1.5;color:var(--hatch-sub-text,rgba(255,255,255,0.8))">'
-        + '<span style="display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;flex-shrink:0;margin-top:1px;background:' + a + '1f;color:' + a + ';font-size:11px;font-weight:bold">' + esc(item.icon || '✓') + '</span>'
+        + '<span style="display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;flex-shrink:0;margin-top:1px;background:' + a + '1f;color:' + a + ';font-size:11px;font-weight:bold">' + esc(featureGlyph(item.icon)) + '</span>'
         + '<span>' + esc(item.text || '') + '</span>'
         + '</li>'
     })
@@ -1302,18 +1311,11 @@
     }
   }
 
-  /** Renders a paywall whose content is a blocks[] array. */
-  // yearly is passed in from renderPaywall so the shared click-delegate controls state
-  function renderBlockPaywall(config, plans, overlay, yearly) {
-    yearly = yearly || false
+  /** Shared theme-token resolution for block paywalls — modal, fullscreen, AND inline.
+   *  Chameleon (live host colours) wins; otherwise the manual design tokens are used. */
+  function resolveBlockTokens(config) {
     var design = config.design || {}
-    var acc   = config._chameleon_accent || design.accentColor || '#6366F1'
-    var mode  = config.display_mode || 'modal'
-    var blocks = config.blocks || []
-
-    // ── Resolve theme tokens (kept in parity with lib/blocks/theme.ts) ──
-    // Chameleon (auto) wins when it detected the host; otherwise use the manual
-    // design.colorScheme + background/surface overrides.
+    var acc = config._chameleon_accent || design.accentColor || '#6366F1'
     var hasChameleon = config._chameleon_dark !== undefined
     var dark = hasChameleon ? !!config._chameleon_dark : ((design.colorScheme || 'dark') !== 'light')
     var T = dark
@@ -1321,73 +1323,162 @@
       : { pageBg: '#EEF0F4', surface: '#FFFFFF', card: 'rgba(12,14,20,0.028)', border: 'rgba(12,14,20,0.10)', hairline: 'rgba(12,14,20,0.025)', text: '#0B0B0F', sub: 'rgba(11,11,15,0.62)' }
     var pageBg, surface, text
     if (hasChameleon) {
-      // Match the HOST's real, live computed colours so the paywall is indistinguishable.
       var hostBg = config._chameleon_surface || T.pageBg
       text = config._chameleon_text || T.text
       pageBg = hostBg
       surface = elevateSurface(hostBg, dark)
       T = {
-        pageBg: hostBg,
-        surface: surface,
+        pageBg: hostBg, surface: surface,
         card: dark ? 'rgba(255,255,255,0.06)' : 'rgba(12,14,20,0.04)',
         border: dark ? 'rgba(255,255,255,0.12)' : 'rgba(12,14,20,0.12)',
         hairline: dark ? 'rgba(255,255,255,0.04)' : 'rgba(12,14,20,0.03)',
-        text: text,
-        sub: dark ? 'rgba(255,255,255,0.64)' : 'rgba(11,11,15,0.6)',
+        text: text, sub: dark ? 'rgba(255,255,255,0.64)' : 'rgba(11,11,15,0.6)',
       }
     } else {
       pageBg  = (design.backgroundGradient || design.background) || T.pageBg
       surface = design.surface || T.surface
       text    = design.textColor || T.text
     }
+    return {
+      acc: acc, dark: dark, T: T, pageBg: pageBg, surface: surface, text: text,
+      font: config._chameleon_font || FONTS[config.font_family] || FONTS.system,
+      radius: config._chameleon_radius || btnRadius(config.button_shape),
+    }
+  }
 
+  function applyBlockTokens(el, tok) {
+    el.style.color = tok.text
+    el.style.fontFamily = tok.font
+    el.style.setProperty('--hatch-accent', tok.acc)
+    el.style.setProperty('--hatch-btn-radius', tok.radius)
+    el.style.setProperty('--hatch-text', tok.text)
+    el.style.setProperty('--hatch-sub-text', tok.T.sub)
+    el.style.setProperty('--hatch-border', tok.T.border)
+    el.style.setProperty('--hatch-card', tok.T.card)
+    el.style.setProperty('--hatch-hairline', tok.T.hairline)
+  }
+
+  /** Renders a paywall whose content is a blocks[] array (modal / fullscreen overlay). */
+  function renderBlockPaywall(config, plans, overlay, yearly) {
+    yearly = yearly || false
+    var mode = config.display_mode || 'modal'
+    var blocks = config.blocks || []
+    var tok = resolveBlockTokens(config)
+    var acc = tok.acc
     var modal = buildModalBase(config, acc)
-
-    // Re-apply the full token set AFTER any cssText reset so the vars survive and
-    // every block renderer (which reads var(--hatch-*)) adapts to light/dark.
-    function applyTokens() {
-      modal.style.color = text
-      modal.style.fontFamily = config._chameleon_font || FONTS[config.font_family] || FONTS.system
-      modal.style.setProperty('--hatch-accent', acc)
-      modal.style.setProperty('--hatch-btn-radius', config._chameleon_radius || btnRadius(config.button_shape))
-      modal.style.setProperty('--hatch-text', text)
-      modal.style.setProperty('--hatch-sub-text', T.sub)
-      modal.style.setProperty('--hatch-border', T.border)
-      modal.style.setProperty('--hatch-card', T.card)
-      modal.style.setProperty('--hatch-hairline', T.hairline)
-    }
-
-    function buildBlocksHtml() {
-      return blocks.map(function(b) { return renderBlock(b, plans, acc, config, yearly) }).join('')
-    }
+    function applyTokens() { applyBlockTokens(modal, tok) }
+    function buildBlocksHtml() { return blocks.map(function(b) { return renderBlock(b, plans, acc, config, yearly) }).join('') }
 
     if (mode === 'fullscreen') {
-      // Fullscreen: overlay fills viewport with the page background; modal is a column
       overlay.style.cssText = 'position:fixed;inset:0;z-index:999998;overflow-y:auto;animation:hatchFadeIn 0.2s ease'
-      overlay.style.background = pageBg
+      overlay.style.background = tok.pageBg
       modal.className = 'hatch-block-fullscreen'
       modal.style.cssText = 'max-width:640px;margin:0 auto;padding:32px 0 40px;position:relative;background:transparent'
       applyTokens()
-      modal.innerHTML = (config.closeable !== false
-        ? '<button id="hatch-close" style="position:sticky;top:12px;float:right;margin:0 12px 0 0;z-index:10">✕</button>'
-        : '')
-        + buildBlocksHtml()
+      modal.innerHTML = (config.closeable !== false ? '<button id="hatch-close" style="position:sticky;top:12px;float:right;margin:0 12px 0 0;z-index:10">✕</button>' : '') + buildBlocksHtml()
       overlay.appendChild(modal)
     } else {
-      // Modal: centered over the (dimmed) host page; panel uses the surface colour
       overlay.style.cssText = 'position:fixed;inset:0;z-index:999998;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;animation:hatchFadeIn 0.2s ease'
       overlay.style.background = 'rgba(0,0,0,' + ((config.overlay_opacity != null ? config.overlay_opacity : 65) / 100) + ')'
       overlay.style.backdropFilter = 'blur(6px)'
       modal.className = 'hatch-block-modal'
       modal.style.cssText += ';max-height:88vh;overflow-y:auto;border-radius:18px'
-      modal.style.background = surface
+      modal.style.background = tok.surface
       applyTokens()
-      modal.innerHTML = (config.closeable !== false ? '<button id="hatch-close" style="position:absolute;top:12px;right:12px">✕</button>' : '')
-        + buildBlocksHtml()
+      modal.innerHTML = (config.closeable !== false ? '<button id="hatch-close" style="position:absolute;top:12px;right:12px">✕</button>' : '') + buildBlocksHtml()
       overlay.appendChild(modal)
     }
-
     return modal
+  }
+
+  // ─── Inline / embedded paywall — renders in the page flow, no overlay ────────
+  // Mounts the block paywall directly inside a host element so it reads as a
+  // native section (auto-skinned via chameleon). No dim, no fixed positioning.
+  function renderInlinePaywall(config, plans, container) {
+    var tok = resolveBlockTokens(config)
+    var yearly = false
+    function build() {
+      var panel = document.createElement('div')
+      panel.className = 'hatch-inline hatch-block-modal'
+      panel.style.cssText = 'position:relative;width:100%;box-sizing:border-box;border-radius:18px;overflow:hidden;background:' + tok.surface + ';border:1px solid ' + tok.T.border
+      applyBlockTokens(panel, tok)
+      panel.innerHTML = (config.blocks || []).map(function(b) { return renderBlock(b, plans, tok.acc, config, yearly) }).join('')
+      container.innerHTML = ''
+      container.appendChild(panel)
+    }
+    build()
+    if (!container.__hatchWired) {
+      container.__hatchWired = true
+      container.addEventListener('click', function(e) {
+        var t = e.target
+        if (t.id === 'hatch-yearly-toggle' || (t.closest && t.closest('#hatch-yearly-toggle'))) {
+          yearly = !yearly
+          track('billing_toggle_changed', { to: yearly ? 'yearly' : 'monthly', paywall_id: config.id })
+          build()
+          return
+        }
+        var btn = (t.dataset && t.dataset.checkout) ? t : (t.closest && t.closest('[data-checkout]'))
+        if (btn && btn.dataset && btn.dataset.checkout) {
+          var planId = btn.dataset.checkout
+          var planEl = btn.closest ? btn.closest('.hatch-plan') : null
+          var priceEl = planEl ? planEl.querySelector('.hatch-price') : null
+          var priceText = priceEl ? priceEl.textContent.replace(/[^0-9.]/g, '') : ''
+          state.priceShownCents = priceText ? Math.round(parseFloat(priceText) * 100) : null
+          state.intervalShown = yearly ? 'yearly' : 'monthly'
+          track('plan_selected', { plan_id: planId, yearly: yearly, paywall_id: config.id })
+          track('cta_clicked', { plan_id: planId, price_shown_cents: state.priceShownCents, interval: state.intervalShown, paywall_id: config.id })
+          startCheckout(config, planId, yearly)
+        }
+      })
+    }
+    track('paywall_shown', { paywall_id: config.id, trigger_type: 'inline' })
+  }
+
+  async function loadInline(container, paywallId) {
+    if (!state.apiKey) { console.warn('[Hatch] Not initialized — set data-key on the script tag'); return }
+    var url = API_BASE + '/sdk/config?key=' + state.apiKey +
+      (paywallId ? '&paywall=' + paywallId : '') +
+      '&session=' + state.sessionId +
+      (getEffectiveUid() ? '&uid=' + encodeURIComponent(getEffectiveUid()) : '') +
+      buildSegmentQueryParams()
+    try {
+      var res = await fetch(url)
+      if (!res.ok) { console.error('[Hatch] inline: cannot reach API — HTTP', res.status); return }
+      var data = await res.json()
+      var config = data.paywall || (data.paywalls && data.paywalls[0])
+      if (!config) { console.warn('[Hatch] inline: paywall not found or not published'); return }
+      if (config._variant_id) state.variantId = config._variant_id
+      if (data.segment_hash) state.segmentHash = data.segment_hash
+      var rawPlans = config.plan_ids && config.plan_ids.length > 0
+        ? (config.plans || []).filter(function(p) { return config.plan_ids.includes(p.id) })
+        : (config.plans || [])
+      var plans = rawPlans.slice().sort(function(a, b) { return (a.price_monthly || 0) - (b.price_monthly || 0) })
+      // Inline embeds always adapt to the host page — that's the whole point of
+      // an in-page paywall (blend in). Chameleon runs regardless of theme_mode.
+      var effective = applyChameleon(config)
+      renderInlinePaywall(applyLocale(effective), plans, container)
+    } catch (e) { console.error('[Hatch] inline load failed:', e) }
+  }
+
+  // Public: mount a paywall inside a specific element.
+  function mount(target, paywallId) {
+    var el = typeof target === 'string' ? document.querySelector(target) : target
+    if (!el) { console.warn('[Hatch] mount: target not found —', target); return }
+    el.setAttribute('data-hatch-mounted', '1')
+    loadInline(el, paywallId || el.getAttribute('data-hatch') || el.getAttribute('data-hatch-paywall') || '')
+  }
+
+  // Auto-discover <div data-hatch="ID"></div> embeds and mount them inline.
+  function autoMountInline() {
+    try {
+      var els = document.querySelectorAll('[data-hatch], [data-hatch-paywall]')
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i]
+        if (el.getAttribute('data-hatch-mounted')) continue
+        el.setAttribute('data-hatch-mounted', '1')
+        loadInline(el, el.getAttribute('data-hatch') || el.getAttribute('data-hatch-paywall') || '')
+      }
+    } catch (e) { /* non-fatal */ }
   }
 
   // ─── Main renderPaywall ────────────────────────────────────────────────────
@@ -1680,6 +1771,8 @@
     // Heartbeat: signal SDK presence to the dashboard immediately and every 60s
     sendHeartbeat()
     setInterval(sendHeartbeat, 60000)
+    // Auto-mount any inline embeds (<div data-hatch="ID">) present on the page.
+    autoMountInline()
   }
 
   function identify(userId, traits) {
@@ -1939,6 +2032,7 @@
     identify: identify,
     track: track,
     show: show,
+    mount: mount,
     hide: hide,
     reset: reset,
     isSubscribed: isSubscribed,
