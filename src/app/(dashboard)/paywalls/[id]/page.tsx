@@ -18,7 +18,8 @@ import { withDefaults, savePaywallResilient } from "@/lib/paywall-resilience"
 import { BLOCK_DEFINITIONS, BLOCK_PICKER_ORDER, COMMON_BLOCK_PROPS } from "@/lib/blocks/definitions"
 import { PAYWALL_TEMPLATES } from "@/lib/blocks/templates"
 import { makeBlock } from "@/lib/blocks/utils"
-import type { Block, BlockType, PropField } from "@/lib/blocks/types"
+import { THEME_PRESETS, BACKGROUND_PRESETS, resolveTheme } from "@/lib/blocks/theme"
+import type { Block, BlockType, PropField, ColorScheme } from "@/lib/blocks/types"
 import {
   DndContext, closestCenter, PointerSensor, useSensor, useSensors,
   type DragEndEvent,
@@ -390,6 +391,10 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null)
   const [showBlockPicker, setShowBlockPicker] = useState(false)
   const [showTemplatePicker, setShowTemplatePicker] = useState(false)
+  const [showAiSiteModal, setShowAiSiteModal] = useState(false)
+  const [aiSiteUrl, setAiSiteUrl] = useState("")
+  const [aiSiteBusy, setAiSiteBusy] = useState(false)
+  const [aiSiteBrand, setAiSiteBrand] = useState<{ name?: string; colorScheme?: string; accentColor?: string; summary?: string } | null>(null)
   const [themeExpanded, setThemeExpanded] = useState(false)
   const [generatingPaywall, setGeneratingPaywall] = useState(false)
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "dirty" | "error">("idle")
@@ -760,6 +765,44 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
     finally { setGeneratingPaywall(false) }
   }
 
+  // Analyze the host app's site and generate a fully on-brand paywall.
+  async function generateFromSite() {
+    const target = aiSiteUrl.trim()
+    if (!target) { toast.error("Entre l'URL de ton app"); return }
+    setAiSiteBusy(true)
+    setAiSiteBrand(null)
+    try {
+      const res = await fetch("/api/ai/generate-from-site", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paywall_id: id, url: target }),
+      })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error ?? "Génération échouée"); return }
+
+      const th = (data.theme ?? {}) as Record<string, string>
+      const nd: Record<string, string> = { ...((form.design ?? {}) as Record<string, string>) }
+      if (th.accentColor) nd.accentColor = th.accentColor
+      if (th.colorScheme) nd.colorScheme = th.colorScheme
+      if (th.background) nd.background = th.background; else delete nd.background
+      if (th.backgroundGradient) nd.backgroundGradient = th.backgroundGradient; else delete nd.backgroundGradient
+      if (th.surface) nd.surface = th.surface; else delete nd.surface
+      update("design", nd)
+      if (th.fontFamily) update("font_family", th.fontFamily as "system" | "serif" | "mono")
+      if (th.buttonShape) update("button_shape", th.buttonShape as "rounded" | "pill" | "square")
+      // Match the server: keep chameleon ON so the live paywall auto-skins to the
+      // host. A later "Save draft" then persists "auto", not "manual".
+      update("theme_mode", "auto")
+      update("blocks", data.blocks ?? [])
+      update("display_mode", data.display_mode ?? "modal")
+      setSelectedBlockId(null)
+      setAiSiteBrand(data.brand ?? null)
+      toast.success(`✨ Paywall calé sur ${data.brand?.name ?? "ta marque"} — ${data.blocks?.length ?? 0} blocs`)
+      if (data.reasoning) toast.info(data.reasoning, { duration: 6000 })
+    } catch { toast.error("Échec de la génération depuis le site") }
+    finally { setAiSiteBusy(false) }
+  }
+
   async function handleSave() {
     setSaving(true)
     setSaveState("saving")
@@ -926,6 +969,42 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
   const locs = form.localizations ?? {}
   const accentColor = (form.design as Record<string, string>)?.accentColor ?? "#6366F1"
 
+  // Full theme passed to the renderer — extended aesthetics live in the `design` JSON.
+  const designJson = (form.design ?? {}) as Record<string, string>
+  const previewTheme = {
+    accentColor,
+    fontFamily: form.font_family ?? "system",
+    buttonShape: form.button_shape ?? "rounded",
+    overlayOpacity: form.overlay_opacity ?? 65,
+    colorScheme: (designJson.colorScheme as ColorScheme) ?? "dark",
+    background: designJson.background || undefined,
+    backgroundGradient: designJson.backgroundGradient || undefined,
+    surface: designJson.surface || undefined,
+    textColor: designJson.textColor || undefined,
+  }
+  const previewStageBg = resolveTheme(previewTheme)
+
+  // Open a full-page preview in a new tab. We stash the current (possibly unsaved)
+  // builder state to localStorage so the preview reflects live edits even if the
+  // last DB save dropped columns; the preview page falls back to the DB otherwise.
+  function openPreview() {
+    try {
+      const previewPlans = selectedPlans.length > 0 ? selectedPlans : plans.slice(0, 3)
+      const snapshot = {
+        id,
+        savedAt: Date.now(),
+        name: form.name ?? "Paywall",
+        blocks: form.blocks ?? [],
+        plans: previewPlans,
+        theme: previewTheme,
+        displayMode: form.display_mode ?? "modal",
+        config: form,
+      }
+      localStorage.setItem(`hatch-preview-${id}`, JSON.stringify(snapshot))
+    } catch { /* localStorage unavailable — preview falls back to saved DB state */ }
+    window.open(`/preview/${id}`, "_blank", "noopener")
+  }
+
   return (
     <div className="flex h-screen bg-[#0A0A0B]">
       {/* Left Panel */}
@@ -1002,12 +1081,11 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                   Templates
                 </button>
                 <button
-                  onClick={generateAiPaywall}
-                  disabled={generatingPaywall || !briefCompleted}
-                  title={!briefCompleted ? "Complete Project Brief first" : "Generate paywall with AI"}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600/15 border border-indigo-500/25 hover:bg-indigo-600/25 text-[10px] text-indigo-400 hover:text-indigo-300 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  onClick={() => setShowAiSiteModal(true)}
+                  title="Générer un paywall calé sur ta marque, par l'IA"
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-600/15 border border-indigo-500/25 hover:bg-indigo-600/25 text-[10px] text-indigo-400 hover:text-indigo-300 transition-all"
                 >
-                  {generatingPaywall ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                  {(generatingPaywall || aiSiteBusy) ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
                   AI
                 </button>
               </div>
@@ -1106,6 +1184,77 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                     </div>
 
                     <div className={`space-y-4 ${(form.theme_mode ?? "auto") === "auto" ? "opacity-40 pointer-events-none" : ""}`}>
+                      {/* Look presets */}
+                      <div>
+                        <label className="text-[10px] text-[#71717A] mb-1.5 block font-medium">Look</label>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {THEME_PRESETS.map(preset => {
+                            const d = (form.design ?? {}) as Record<string, string>
+                            const active = (d.colorScheme ?? "dark") === preset.scheme && d.accentColor === preset.theme.accentColor
+                            return (
+                              <button
+                                key={preset.id}
+                                title={preset.name}
+                                onClick={() => {
+                                  const nd: Record<string, string> = { ...((form.design ?? {}) as Record<string, string>) }
+                                  nd.colorScheme = preset.theme.colorScheme as string
+                                  nd.accentColor = preset.theme.accentColor as string
+                                  if (preset.theme.background != null) nd.background = preset.theme.background; else delete nd.background
+                                  if (preset.theme.backgroundGradient != null) nd.backgroundGradient = preset.theme.backgroundGradient; else delete nd.backgroundGradient
+                                  update("design", nd)
+                                  if (preset.theme.fontFamily) update("font_family", preset.theme.fontFamily)
+                                  if (preset.theme.buttonShape) update("button_shape", preset.theme.buttonShape)
+                                }}
+                                className={`flex flex-col items-center gap-1 py-2 rounded-lg border transition-all ${active ? "border-indigo-500/60 bg-indigo-500/10" : "border-white/6 bg-white/3 hover:bg-white/6"}`}
+                              >
+                                <span className="w-5 h-5 rounded-full border border-white/20" style={{ background: preset.scheme === "light" ? "#fff" : "#111", boxShadow: `inset 0 0 0 2px ${preset.swatch}` }} />
+                                <span className="text-[9px] text-[#A1A1AA] leading-none">{preset.name}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      {/* Appearance (light / dark) */}
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] text-[#71717A] font-medium">Appearance</label>
+                        <div className="flex rounded-lg border border-white/8 overflow-hidden">
+                          {(["light", "dark"] as const).map(s => {
+                            const cur = (form.design as Record<string, string>)?.colorScheme ?? "dark"
+                            return (
+                              <button key={s}
+                                onClick={() => update("design", { ...(form.design ?? {}), colorScheme: s })}
+                                className={`px-3 py-1 text-[10px] capitalize transition-colors ${cur === s ? "bg-indigo-600 text-white" : "text-[#71717A] hover:text-white"}`}
+                              >{s}</button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      {/* Background */}
+                      <div>
+                        <label className="text-[10px] text-[#71717A] mb-1.5 block font-medium">Background</label>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {BACKGROUND_PRESETS.map(bp => {
+                            const d = (form.design ?? {}) as Record<string, string>
+                            const active = (d.background ?? "") === (bp.value.background ?? "") && (d.backgroundGradient ?? "") === (bp.value.backgroundGradient ?? "")
+                            return (
+                              <button
+                                key={bp.id}
+                                title={bp.label}
+                                onClick={() => {
+                                  const nd: Record<string, string> = { ...((form.design ?? {}) as Record<string, string>) }
+                                  if (bp.value.background != null) nd.background = bp.value.background; else delete nd.background
+                                  if (bp.value.backgroundGradient != null) nd.backgroundGradient = bp.value.backgroundGradient; else delete nd.backgroundGradient
+                                  update("design", nd)
+                                }}
+                                className={`h-9 rounded-lg border relative overflow-hidden transition-all ${active ? "border-indigo-500/60" : "border-white/8 hover:border-white/20"}`}
+                                style={{ background: bp.value.backgroundGradient ?? bp.value.background ?? "linear-gradient(135deg,#1a1a2e,#16213e)" }}
+                              >
+                                <span className="absolute inset-x-0 bottom-0 text-[8px] text-white bg-black/40 leading-tight py-px">{bp.label}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
                       {/* Accent color */}
                       <div>
                         <label className="text-[10px] text-[#71717A] mb-1.5 block font-medium">Accent color</label>
@@ -2076,6 +2225,15 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
       <div className="flex-1 flex flex-col bg-[#0A0A0B] overflow-hidden">
         {/* Viewport toolbar */}
         <div className="flex items-center justify-center gap-2 py-3 border-b border-white/6 relative">
+          {/* Full-page preview */}
+          <button
+            onClick={openPreview}
+            className="absolute left-4 flex items-center gap-1.5 text-[11px] font-medium text-indigo-400 hover:text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/15 px-2.5 py-1.5 rounded-lg transition-colors"
+            title="Ouvrir l'aperçu plein écran dans un nouvel onglet"
+          >
+            <Eye className="w-3.5 h-3.5" />
+            Aperçu
+          </button>
           {VIEWPORTS.map(({ key, icon: Icon }) => (
             <button
               key={key}
@@ -2118,20 +2276,16 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                 <span className="text-[10px] text-[#52525B]">myapp.lovable.app</span>
               </div>
             </div>
-            <div className="relative h-[calc(100%-40px)] bg-gradient-to-br from-[#1a1a2e] to-[#16213e] flex items-center justify-center">
+            <div className="relative h-[calc(100%-40px)] flex items-center justify-center" style={{ background: previewStageBg.pageGradient ?? previewStageBg.pageBg }}>
               {(form.blocks ?? []).length > 0 ? (
                 <BlocksPreview
                   blocks={form.blocks ?? []}
                   plans={selectedPlans.length > 0 ? selectedPlans : plans.slice(0, 3)}
-                  theme={{
-                    accentColor,
-                    fontFamily: form.font_family ?? "system",
-                    buttonShape: form.button_shape ?? "rounded",
-                    overlayOpacity: form.overlay_opacity ?? 65,
-                  }}
+                  theme={previewTheme}
                   displayMode={form.display_mode ?? "modal"}
                   device={previewDevice}
                   highlightId={selectedBlockId}
+                  currency={form.currency ?? "USD"}
                 />
               ) : (
                 <PaywallPreview
@@ -2288,6 +2442,75 @@ export default function PaywallBuilderPage({ params }: { params: Promise<{ id: s
                   </div>
                 </button>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── AI: generate an on-brand paywall from the host app ──────────────── */}
+      {showAiSiteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-6">
+          <div className="bg-[#111116] border border-white/10 rounded-2xl w-full max-w-md flex flex-col overflow-hidden shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
+              <div className="flex items-center gap-2">
+                <Wand2 className="w-4 h-4 text-indigo-400" />
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Générer depuis ton app</h3>
+                  <p className="text-[11px] text-[#71717A] mt-0.5">L&apos;IA analyse ton site et crée un paywall à ta marque</p>
+                </div>
+              </div>
+              <button onClick={() => setShowAiSiteModal(false)} className="w-7 h-7 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-[#71717A] hover:text-white transition-colors">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="text-[10px] text-[#71717A] mb-1.5 block font-medium uppercase tracking-wide">URL de ton app / landing</label>
+                <input
+                  value={aiSiteUrl}
+                  onChange={e => setAiSiteUrl(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && !aiSiteBusy) generateFromSite() }}
+                  placeholder="https://mon-app.com"
+                  className="hatch-input"
+                  autoFocus
+                />
+                <p className="text-[10px] text-[#52525B] mt-1.5">Couleurs, polices, arrondis, clair/sombre et logo sont détectés puis assimilés.</p>
+              </div>
+
+              <button
+                onClick={generateFromSite}
+                disabled={aiSiteBusy || !aiSiteUrl.trim()}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {aiSiteBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+                {aiSiteBusy ? "Analyse & génération…" : "Analyser & générer"}
+              </button>
+
+              {aiSiteBrand && (
+                <div className="rounded-xl border border-white/8 bg-white/3 p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-4 h-4 rounded-full border border-white/20" style={{ background: aiSiteBrand.accentColor ?? "#6366F1" }} />
+                    <span className="text-[12px] font-semibold text-white">{aiSiteBrand.name ?? "Marque détectée"}</span>
+                    {aiSiteBrand.colorScheme && (
+                      <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded bg-white/8 text-[#A1A1AA] capitalize">{aiSiteBrand.colorScheme}</span>
+                    )}
+                  </div>
+                  {aiSiteBrand.summary && <p className="text-[10px] text-[#71717A] leading-snug">{aiSiteBrand.summary}</p>}
+                  <p className="text-[10px] text-emerald-400">✓ Appliqué à l&apos;aperçu — ferme pour ajuster.</p>
+                </div>
+              )}
+
+              <div className="pt-1 border-t border-white/6">
+                <button
+                  onClick={() => { setShowAiSiteModal(false); generateAiPaywall() }}
+                  disabled={!briefCompleted}
+                  title={!briefCompleted ? "Complète le Project Brief d'abord" : "Générer depuis le brief produit"}
+                  className="w-full mt-3 text-[11px] text-[#71717A] hover:text-indigo-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  ou générer depuis le Project Brief →
+                </button>
+              </div>
             </div>
           </div>
         </div>

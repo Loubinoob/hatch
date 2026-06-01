@@ -62,6 +62,12 @@ function ensureBlocksAndTheme(paywall: any): any {
       buttonShape:    paywall.button_shape    ?? "rounded",
       overlayOpacity: paywall.overlay_opacity ?? 65,
       animationStyle: paywall.animation_style ?? "slide",
+      // Extended token theme (lives in the design JSON) — carried through so the
+      // SDK has light/dark + custom background even if it reads `theme`.
+      colorScheme:        (design.colorScheme        as string) ?? undefined,
+      background:         (design.background         as string) ?? undefined,
+      backgroundGradient: (design.backgroundGradient as string) ?? undefined,
+      surface:            (design.surface            as string) ?? undefined,
     }
     return { ...paywall, blocks, display_mode, theme }
   } catch (err) {

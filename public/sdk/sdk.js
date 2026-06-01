@@ -490,6 +490,19 @@
     return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
   }
 
+  // Derive the modal panel colour from the host's page background: lift a dark
+  // host slightly so cards/borders read; keep light hosts on a clean white panel.
+  function elevateSurface(rgbStr, dark) {
+    var m = (rgbStr || '').match(/[\d.]+/g)
+    if (!m || m.length < 3) return dark ? 'rgb(18,18,20)' : '#FFFFFF'
+    var r = +m[0], g = +m[1], b = +m[2]
+    if (dark) {
+      r = Math.round(r + (255 - r) * 0.07); g = Math.round(g + (255 - g) * 0.07); b = Math.round(b + (255 - b) * 0.07)
+      return 'rgb(' + r + ',' + g + ',' + b + ')'
+    }
+    return relativeLuminance(rgbStr) > 0.85 ? 'rgb(' + r + ',' + g + ',' + b + ')' : '#FFFFFF'
+  }
+
   function rgbToHsl(rgbStr) {
     var m = (rgbStr || '').match(/[\d.]+/g)
     if (!m || m.length < 3) return [0, 0, 50]
@@ -579,7 +592,11 @@
       var lum = relativeLuminance(bg)
       theme.isDark = lum < 0.4
       theme.surfaceBg = bg
-      theme.textColor = theme.isDark ? '#FFFFFF' : '#0A0A0B'
+      // Prefer the host's REAL text colour when it has decent contrast on its bg,
+      // so the paywall's type matches the app; fall back to safe white/near-black.
+      var realText = bodyStyle.color
+      theme.textColor = (realText && contrastRatio(relativeLuminance(realText), lum) >= 3.5)
+        ? realText : (theme.isDark ? '#FFFFFF' : '#0A0A0B')
       theme.accent = detectAccentColor()
       theme.radius = detectBorderRadius()
     } catch (e) {}
@@ -1002,11 +1019,76 @@
     var wrap = blockWrapperStyle(props, '24px')
     var align = props.alignment || 'center'
     var html = '<div class="hatch-block-hero" style="' + wrap + '">'
-    if (props.eyebrow) html += '<span style="display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;padding:4px 12px;border-radius:999px;margin-bottom:12px;background:' + a + '22;color:' + a + '">' + esc(props.eyebrow) + '</span>'
-    html += '<h2 class="hatch-headline" style="font-size:26px;font-weight:700;letter-spacing:-0.02em;line-height:1.15;margin:0 0 10px;text-align:' + (align === 'left' ? 'left' : 'center') + '">' + esc(props.headline || 'Unlock full access') + '</h2>'
-    if (props.subheadline) html += '<p class="hatch-sub" style="margin:0 auto;font-size:13px;line-height:1.5;max-width:480px;color:var(--hatch-sub-text,rgba(255,255,255,0.65))">' + esc(props.subheadline) + '</p>'
+    if (props.eyebrow) html += '<span style="display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;padding:4px 12px;border-radius:999px;margin-bottom:14px;background:' + a + '22;color:' + a + '">' + esc(props.eyebrow) + '</span>'
+    html += '<h2 class="hatch-headline" style="font-size:clamp(24px,5.5vw,32px);font-weight:700;letter-spacing:-0.025em;line-height:1.13;margin:0 0 10px;text-align:' + (align === 'left' ? 'left' : 'center') + '">' + esc(props.headline || 'Unlock full access') + '</h2>'
+    if (props.subheadline) html += '<p class="hatch-sub" style="margin:' + (align === 'left' ? '0' : '0 auto') + ';font-size:14px;line-height:1.55;max-width:480px;color:var(--hatch-sub-text,rgba(255,255,255,0.65))">' + esc(props.subheadline) + '</p>'
     html += '</div>'
     return html
+  }
+
+  function renderBlock_image(props) {
+    if (isHidden(props)) return ''
+    var wrap = blockWrapperStyle(props, '24px')
+    var sizeMap = { s: '150px', m: '240px', l: '360px', full: '100%' }
+    var w = sizeMap[props.size] || sizeMap.m
+    var align = props.alignment === 'left' ? 'flex-start' : (props.alignment === 'right' ? 'flex-end' : 'center')
+    var radius = props.rounded === false ? '0' : '16px'
+    var html = '<div class="hatch-block-image" style="' + wrap + ';display:flex;justify-content:' + align + '">'
+    if (props.url) {
+      html += '<img src="' + esc(props.url) + '" alt="' + esc(props.alt || '') + '" style="width:' + w + ';max-width:100%;height:auto;object-fit:contain;border-radius:' + radius + '">'
+    } else {
+      html += '<div style="width:' + (w === '100%' ? '100%' : w) + ';aspect-ratio:4/3;border-radius:16px;background:var(--hatch-card,rgba(255,255,255,0.045));border:1px solid var(--hatch-border,rgba(255,255,255,0.09));display:flex;align-items:center;justify-content:center;color:var(--hatch-sub-text,rgba(255,255,255,0.4));font-size:10px;text-transform:uppercase;letter-spacing:0.08em">Image</div>'
+    }
+    html += '</div>'
+    return html
+  }
+
+  // Block `plans` renderer — kept in visual parity with the React BlocksPreview
+  // premium cards (equal-height flex cards, floating popular badge, left-aligned
+  // content). Cards keep class "hatch-plan" + data-plan-id (hover tracking) and a
+  // ".hatch-price" element (analytics reads the shown price); CTA keeps data-checkout.
+  function fmtPlanPrice(v) { return v.toFixed(v < 10 && v > 0 ? 2 : 0) }
+
+  function buildBlockPlanCard(plan, a, sym, ctaCopy, yearly) {
+    var popular = !!plan.is_popular
+    var isFree = (plan.price_monthly || 0) <= 0 && (plan.price_yearly || 0) <= 0
+    var price = (yearly && plan.price_yearly > 0) ? (plan.price_yearly / 12 / 100) : (plan.price_monthly / 100)
+    var savings = null
+    if (yearly && plan.price_yearly > 0 && plan.price_monthly > 0) {
+      var mt = plan.price_monthly * 12
+      savings = Math.round((mt - plan.price_yearly) / mt * 100)
+    }
+    var cardStyle = popular
+      ? 'background:linear-gradient(180deg,' + a + '22,' + a + '08);border:1.5px solid ' + a + '66;box-shadow:0 0 0 1px ' + a + '1f,0 18px 44px -14px ' + a + '66'
+      : 'background:var(--hatch-card,rgba(255,255,255,0.045));border:1.5px solid var(--hatch-border,rgba(255,255,255,0.08))'
+    var h = '<div class="hatch-plan" data-plan-id="' + plan.id + '" style="position:relative;display:flex;flex-direction:column;text-align:left;border-radius:16px;padding:20px;cursor:pointer;box-sizing:border-box;' + cardStyle + '">'
+    if (popular) h += '<div style="position:absolute;top:-10px;left:50%;transform:translateX(-50%);white-space:nowrap;padding:4px 12px;border-radius:999px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:' + a + ';color:#fff;box-shadow:0 4px 14px ' + a + '77">★ Most Popular</div>'
+    h += '<p style="font-size:12px;font-weight:600;margin:' + (popular ? '6px' : '0') + ' 0 8px;color:var(--hatch-text,rgba(255,255,255,0.9))">' + esc(plan.name) + '</p>'
+    h += '<div style="display:flex;align-items:baseline;gap:4px">'
+    if (isFree) {
+      h += '<span class="hatch-price" style="font-size:30px;font-weight:700;letter-spacing:-0.02em;line-height:1;color:var(--hatch-text,#fff)">Free</span>'
+    } else {
+      h += '<span class="hatch-price" style="font-size:30px;font-weight:700;letter-spacing:-0.02em;line-height:1;color:var(--hatch-text,#fff)">' + esc(sym) + fmtPlanPrice(price) + '</span><span style="font-size:11px;font-weight:500;color:var(--hatch-sub-text,rgba(255,255,255,0.45))">/mo</span>'
+    }
+    h += '</div>'
+    h += '<div style="height:20px;margin:4px 0 12px;display:flex;align-items:center;gap:6px">'
+    if (savings != null && savings > 0) h += '<span style="font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;background:' + a + '22;color:' + a + '">Save ' + savings + '%</span>'
+    else if (yearly && plan.price_yearly > 0) h += '<span style="font-size:9.5px;color:var(--hatch-sub-text,rgba(255,255,255,0.4))">billed ' + esc(sym) + Math.round(plan.price_yearly / 100) + '/yr</span>'
+    h += '</div>'
+    h += '<ul style="list-style:none;margin:0 0 20px;padding:0;display:flex;flex-direction:column;gap:8px;flex:1">'
+    ;(plan.features || []).slice(0, 5).forEach(function(f) {
+      h += '<li style="display:flex;align-items:flex-start;gap:8px;font-size:11px;line-height:1.45;color:var(--hatch-sub-text,rgba(255,255,255,0.72))">'
+        + '<span style="display:flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;flex-shrink:0;margin-top:1px;background:' + a + '22">'
+        + '<svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="' + a + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        + '</span><span>' + esc(f) + '</span></li>'
+    })
+    h += '</ul>'
+    var ctaStyle = popular
+      ? 'background:' + a + ';color:#fff;border:none;box-shadow:0 6px 18px ' + a + '66'
+      : 'background:var(--hatch-card,rgba(255,255,255,0.06));color:var(--hatch-text,rgba(255,255,255,0.92));border:1px solid var(--hatch-border,rgba(255,255,255,0.1))'
+    h += '<button class="hatch-cta" data-checkout="' + plan.id + '" style="width:100%;padding:11px;margin-top:0;border-radius:var(--hatch-btn-radius,10px);cursor:pointer;font-size:11px;font-weight:600;transition:opacity 0.15s;' + ctaStyle + '">' + esc(ctaCopy) + '</button>'
+    h += '</div>'
+    return h
   }
 
   function renderBlock_plans(props, plans, acc, config, yearly) {
@@ -1014,14 +1096,25 @@
     var a = blockAccent(props, acc)
     var ctaCopy = props.ctaCopy || config.cta_copy || 'Get started'
     var yEnabled = (props.yearlyToggle !== false) && config.show_yearly_toggle && plans.some(function(p) { return p.price_yearly > 0 })
+    var sym = CURRENCY_SYMBOLS[config.currency || 'USD'] || '$'
     var wrap = blockWrapperStyle(props, '16px')
+    var sorted = plans.slice().sort(function(a2, b2) { return (a2.price_monthly || 0) - (b2.price_monthly || 0) }).slice(0, 3)
+    var cols = sorted.length >= 3 ? 3 : (sorted.length === 2 ? 2 : 1)
     var html = '<div class="hatch-block-plans" style="' + wrap + '">'
     if (yEnabled) html += buildYearlyToggle(yearly, config.yearly_discount_percent)
-    // Use same config but override cta_copy + accent
-    var cfgOverride = Object.assign({}, config, { cta_copy: ctaCopy })
-    html += buildPlans(plans, cfgOverride, a, yearly)
-    html += '</div>'
+    html += '<div style="display:grid;gap:14px;align-items:stretch;grid-template-columns:repeat(' + cols + ',minmax(0,1fr))">'
+    sorted.forEach(function(plan) { html += buildBlockPlanCard(plan, a, sym, ctaCopy, yearly) })
+    html += '</div></div>'
     return html
+  }
+
+  // Map AI/editor icon names (lucide-style) to a glyph; keep emojis; else a check.
+  var FEATURE_GLYPHS = { check: '✓', sparkles: '✨', trending: '↗', 'trending-up': '↗', lock: '🔒', zap: '⚡', heart: '♥', award: '🏆', crown: '👑', star: '★', shield: '🛡', rocket: '🚀', bolt: '⚡', infinity: '∞' }
+  function featureGlyph(ic) {
+    if (!ic) return '✓'
+    var key = String(ic).toLowerCase().trim()
+    if (FEATURE_GLYPHS[key]) return FEATURE_GLYPHS[key]
+    return key.length <= 2 ? ic : '✓' // already an emoji/symbol, else neutral check
   }
 
   function renderBlock_features(props, acc) {
@@ -1034,7 +1127,7 @@
     html += '<ul style="list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px;text-align:left">'
     items.forEach(function(item) {
       html += '<li style="display:flex;align-items:flex-start;gap:10px;font-size:12px;line-height:1.5;color:var(--hatch-sub-text,rgba(255,255,255,0.8))">'
-        + '<span style="display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;flex-shrink:0;margin-top:1px;background:' + a + '1f;color:' + a + ';font-size:11px;font-weight:bold">' + esc(item.icon || '✓') + '</span>'
+        + '<span style="display:flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:6px;flex-shrink:0;margin-top:1px;background:' + a + '1f;color:' + a + ';font-size:11px;font-weight:bold">' + esc(featureGlyph(item.icon)) + '</span>'
         + '<span>' + esc(item.text || '') + '</span>'
         + '</li>'
     })
@@ -1054,7 +1147,7 @@
       var avatarHtml = item.avatar
         ? '<img src="' + esc(item.avatar) + '" alt="' + esc(item.author || '') + '" style="width:24px;height:24px;border-radius:50%;object-fit:cover" />'
         : '<div style="width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,' + a + ',' + a + '99);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:bold;color:#fff">' + esc((item.author || '?').charAt(0).toUpperCase()) + '</div>'
-      html += '<div style="border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:12px;background:rgba(255,255,255,0.04)">'
+      html += '<div style="border:1px solid var(--hatch-border,rgba(255,255,255,0.07));border-radius:14px;padding:12px;background:var(--hatch-card,rgba(255,255,255,0.04))">'
         + '<div style="display:flex;gap:2px;margin-bottom:8px">' + '★★★★★'.split('').map(function(s) { return '<span style="color:#F59E0B;font-size:11px">' + s + '</span>' }).join('') + '</div>'
         + '<p style="font-size:11px;color:var(--hatch-sub-text,rgba(255,255,255,0.75));margin:0 0 10px;line-height:1.5">&ldquo;' + esc(item.quote || '') + '&rdquo;</p>'
         + '<div style="display:flex;align-items:center;gap:8px">' + avatarHtml
@@ -1091,13 +1184,13 @@
     var wrap = blockWrapperStyle(props, '20px')
     var html = '<div class="hatch-block-comparison" style="' + wrap + '">'
     if (props.title) html += '<p style="font-size:13px;font-weight:600;color:var(--hatch-text,#fff);margin:0 0 12px">' + esc(props.title) + '</p>'
-    html += '<div style="border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:hidden">'
-    html += '<div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;padding:10px 14px;background:rgba(255,255,255,0.04)">'
+    html += '<div style="border:1px solid var(--hatch-border,rgba(255,255,255,0.08));border-radius:12px;overflow:hidden">'
+    html += '<div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;padding:10px 14px;background:var(--hatch-card,rgba(255,255,255,0.04))">'
       + '<span style="font-size:10px;color:var(--hatch-sub-text,rgba(255,255,255,0.5));font-weight:500">Feature</span>'
     planNames.forEach(function(n) { html += '<span style="font-size:10px;text-align:center;color:var(--hatch-text,#fff);font-weight:600">' + esc(n) + '</span>' })
     html += '</div>'
     rows.slice(0, 7).forEach(function(row, i) {
-      html += '<div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;padding:10px 14px;border-top:1px solid rgba(255,255,255,0.05)' + (i % 2 === 1 ? ';background:rgba(255,255,255,0.015)' : '') + '">'
+      html += '<div style="display:grid;grid-template-columns:1.5fr 1fr 1fr;padding:10px 14px;border-top:1px solid var(--hatch-border,rgba(255,255,255,0.05))' + (i % 2 === 1 ? ';background:var(--hatch-hairline,rgba(255,255,255,0.015))' : '') + '">'
       html += '<span style="font-size:10px;color:var(--hatch-sub-text,rgba(255,255,255,0.65))">' + esc(row.feature || '') + '</span>'
       ;(row.values || []).slice(0, 2).forEach(function(v) {
         var display = v === 'yes' ? '✓' : v === 'no' ? '✗' : v
@@ -1117,7 +1210,7 @@
     var html = '<div class="hatch-block-faq" style="' + wrap + '">'
     if (props.title) html += '<p style="font-size:13px;font-weight:600;color:var(--hatch-text,#fff);margin:0 0 12px">' + esc(props.title) + '</p>'
     items.forEach(function(item) {
-      html += '<details style="border:1px solid rgba(255,255,255,0.07);border-radius:12px;margin-bottom:6px;overflow:hidden;background:rgba(255,255,255,0.02)">'
+      html += '<details style="border:1px solid var(--hatch-border,rgba(255,255,255,0.07));border-radius:12px;margin-bottom:6px;overflow:hidden;background:var(--hatch-hairline,rgba(255,255,255,0.02))">'
         + '<summary style="cursor:pointer;padding:11px 14px;font-size:12px;font-weight:500;color:var(--hatch-text,#fff);list-style:none;user-select:none;text-align:left">' + esc(item.question || '') + '</summary>'
         + '<p style="margin:0;padding:0 14px 12px;font-size:11px;color:var(--hatch-sub-text,rgba(255,255,255,0.6));line-height:1.6;text-align:left">' + esc(item.answer || '') + '</p>'
         + '</details>'
@@ -1150,16 +1243,25 @@
       + '</div></div>'
   }
 
-  function renderBlock_video(props) {
+  function renderBlock_video(props, acc) {
     if (isHidden(props)) return ''
+    var a = blockAccent(props, acc)
     var wrap = blockWrapperStyle(props, '20px')
-    if (!props.url) return '<div style="padding:8px 16px;text-align:center;font-size:10px;color:rgba(255,255,255,0.3)">(Video block — add URL in editor)</div>'
-    var src = String(props.url).replace('watch?v=', 'embed/')
     var html = '<div class="hatch-block-video" style="' + wrap + '">'
-    if (props.title) html += '<p style="font-size:11px;color:var(--hatch-sub-text,rgba(255,255,255,0.65));text-align:center;margin:0 0 8px">' + esc(props.title) + '</p>'
-    html += '<div style="position:relative;padding-bottom:56.25%;height:0;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.08)">'
-      + '<iframe src="' + esc(src) + '" style="position:absolute;top:0;left:0;width:100%;height:100%" frameborder="0" allowfullscreen></iframe>'
-      + '</div></div>'
+    if (props.title) html += '<p style="font-size:12px;font-weight:500;color:var(--hatch-sub-text,rgba(255,255,255,0.7));text-align:center;margin:0 0 10px">' + esc(props.title) + '</p>'
+    if (props.url) {
+      var src = String(props.url).replace('watch?v=', 'embed/')
+      html += '<div style="position:relative;padding-bottom:56.25%;height:0;border-radius:16px;overflow:hidden;border:1px solid var(--hatch-border,rgba(255,255,255,0.08));background:#000">'
+        + '<iframe src="' + esc(src) + '" style="position:absolute;top:0;left:0;width:100%;height:100%" frameborder="0" allowfullscreen></iframe></div>'
+    } else {
+      html += '<div style="position:relative;padding-bottom:56.25%;height:0;border-radius:16px;overflow:hidden;border:1px solid var(--hatch-border,rgba(255,255,255,0.08));background:var(--hatch-card,radial-gradient(120% 120% at 50% 0%,rgba(255,255,255,0.07),rgba(255,255,255,0.015)))">'
+        + '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px">'
+        + '<div style="width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:' + a + '22;border:1.5px solid ' + a + ';box-shadow:0 8px 24px -6px ' + a + '66">'
+        + '<span style="font-size:18px;color:' + a + ';margin-left:2px">▶</span></div>'
+        + '<span style="font-size:10px;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.08em">Video preview</span>'
+        + '</div></div>'
+    }
+    html += '</div>'
     return html
   }
 
@@ -1193,6 +1295,7 @@
     var p = block.props || {}
     switch (block.type) {
       case 'hero':         return renderBlock_hero(p, acc)
+      case 'image':        return renderBlock_image(p)
       case 'plans':        return renderBlock_plans(p, plans, acc, config, yearly)
       case 'features':     return renderBlock_features(p, acc)
       case 'testimonials': return renderBlock_testimonials(p, acc)
@@ -1201,51 +1304,181 @@
       case 'faq':          return renderBlock_faq(p)
       case 'urgency':      return renderBlock_urgency(p, acc)
       case 'guarantee':    return renderBlock_guarantee(p)
-      case 'video':        return renderBlock_video(p)
+      case 'video':        return renderBlock_video(p, acc)
       case 'stats':        return renderBlock_stats(p, acc)
       case 'footer':       return renderBlock_footer(p)
       default:             return ''
     }
   }
 
-  /** Renders a paywall whose content is a blocks[] array. */
-  // yearly is passed in from renderPaywall so the shared click-delegate controls state
+  /** Shared theme-token resolution for block paywalls — modal, fullscreen, AND inline.
+   *  Chameleon (live host colours) wins; otherwise the manual design tokens are used. */
+  function resolveBlockTokens(config) {
+    var design = config.design || {}
+    var acc = config._chameleon_accent || design.accentColor || '#6366F1'
+    var hasChameleon = config._chameleon_dark !== undefined
+    var dark = hasChameleon ? !!config._chameleon_dark : ((design.colorScheme || 'dark') !== 'light')
+    var T = dark
+      ? { pageBg: '#0A0A0F', surface: '#0F0F12', card: 'rgba(255,255,255,0.045)', border: 'rgba(255,255,255,0.09)', hairline: 'rgba(255,255,255,0.03)', text: '#FFFFFF', sub: 'rgba(255,255,255,0.66)' }
+      : { pageBg: '#EEF0F4', surface: '#FFFFFF', card: 'rgba(12,14,20,0.028)', border: 'rgba(12,14,20,0.10)', hairline: 'rgba(12,14,20,0.025)', text: '#0B0B0F', sub: 'rgba(11,11,15,0.62)' }
+    var pageBg, surface, text
+    if (hasChameleon) {
+      var hostBg = config._chameleon_surface || T.pageBg
+      text = config._chameleon_text || T.text
+      pageBg = hostBg
+      surface = elevateSurface(hostBg, dark)
+      T = {
+        pageBg: hostBg, surface: surface,
+        card: dark ? 'rgba(255,255,255,0.06)' : 'rgba(12,14,20,0.04)',
+        border: dark ? 'rgba(255,255,255,0.12)' : 'rgba(12,14,20,0.12)',
+        hairline: dark ? 'rgba(255,255,255,0.04)' : 'rgba(12,14,20,0.03)',
+        text: text, sub: dark ? 'rgba(255,255,255,0.64)' : 'rgba(11,11,15,0.6)',
+      }
+    } else {
+      pageBg  = (design.backgroundGradient || design.background) || T.pageBg
+      surface = design.surface || T.surface
+      text    = design.textColor || T.text
+    }
+    return {
+      acc: acc, dark: dark, T: T, pageBg: pageBg, surface: surface, text: text,
+      font: config._chameleon_font || FONTS[config.font_family] || FONTS.system,
+      radius: config._chameleon_radius || btnRadius(config.button_shape),
+    }
+  }
+
+  function applyBlockTokens(el, tok) {
+    el.style.color = tok.text
+    el.style.fontFamily = tok.font
+    el.style.setProperty('--hatch-accent', tok.acc)
+    el.style.setProperty('--hatch-btn-radius', tok.radius)
+    el.style.setProperty('--hatch-text', tok.text)
+    el.style.setProperty('--hatch-sub-text', tok.T.sub)
+    el.style.setProperty('--hatch-border', tok.T.border)
+    el.style.setProperty('--hatch-card', tok.T.card)
+    el.style.setProperty('--hatch-hairline', tok.T.hairline)
+  }
+
+  /** Renders a paywall whose content is a blocks[] array (modal / fullscreen overlay). */
   function renderBlockPaywall(config, plans, overlay, yearly) {
     yearly = yearly || false
-    var acc   = config._chameleon_accent || (config.design && config.design.accentColor) || '#6366F1'
-    var mode  = config.display_mode || 'modal'
+    var mode = config.display_mode || 'modal'
     var blocks = config.blocks || []
-
+    var tok = resolveBlockTokens(config)
+    var acc = tok.acc
     var modal = buildModalBase(config, acc)
-
-    // Build content by rendering each block
-    function buildBlocksHtml() {
-      return blocks.map(function(b) { return renderBlock(b, plans, acc, config, yearly) }).join('')
-    }
+    function applyTokens() { applyBlockTokens(modal, tok) }
+    function buildBlocksHtml() { return blocks.map(function(b) { return renderBlock(b, plans, acc, config, yearly) }).join('') }
 
     if (mode === 'fullscreen') {
-      // Fullscreen: overlay fills viewport, modal is a scrollable column
-      overlay.style.cssText = 'position:fixed;inset:0;z-index:999998;overflow-y:auto;background:#0A0A0F;animation:hatchFadeIn 0.2s ease'
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:999998;overflow-y:auto;animation:hatchFadeIn 0.2s ease'
+      overlay.style.background = tok.pageBg
       modal.className = 'hatch-block-fullscreen'
-      modal.style.cssText = 'max-width:600px;margin:0 auto;padding:24px 0 40px;position:relative'
-      modal.innerHTML = (config.closeable !== false
-        ? '<button id="hatch-close" style="position:sticky;top:12px;float:right;margin:0 12px 0 0;z-index:10">✕</button>'
-        : '')
-        + buildBlocksHtml()
+      modal.style.cssText = 'max-width:640px;margin:0 auto;padding:32px 0 40px;position:relative;background:transparent'
+      applyTokens()
+      modal.innerHTML = (config.closeable !== false ? '<button id="hatch-close" style="position:sticky;top:12px;float:right;margin:0 12px 0 0;z-index:10">✕</button>' : '') + buildBlocksHtml()
       overlay.appendChild(modal)
     } else {
-      // Modal: centered with max-height scroll
       overlay.style.cssText = 'position:fixed;inset:0;z-index:999998;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box;animation:hatchFadeIn 0.2s ease'
       overlay.style.background = 'rgba(0,0,0,' + ((config.overlay_opacity != null ? config.overlay_opacity : 65) / 100) + ')'
       overlay.style.backdropFilter = 'blur(6px)'
       modal.className = 'hatch-block-modal'
       modal.style.cssText += ';max-height:88vh;overflow-y:auto;border-radius:18px'
-      modal.innerHTML = (config.closeable !== false ? '<button id="hatch-close" style="position:absolute;top:12px;right:12px">✕</button>' : '')
-        + buildBlocksHtml()
+      modal.style.background = tok.surface
+      applyTokens()
+      modal.innerHTML = (config.closeable !== false ? '<button id="hatch-close" style="position:absolute;top:12px;right:12px">✕</button>' : '') + buildBlocksHtml()
       overlay.appendChild(modal)
     }
-
     return modal
+  }
+
+  // ─── Inline / embedded paywall — renders in the page flow, no overlay ────────
+  // Mounts the block paywall directly inside a host element so it reads as a
+  // native section (auto-skinned via chameleon). No dim, no fixed positioning.
+  function renderInlinePaywall(config, plans, container) {
+    var tok = resolveBlockTokens(config)
+    var yearly = false
+    function build() {
+      var panel = document.createElement('div')
+      panel.className = 'hatch-inline hatch-block-modal'
+      panel.style.cssText = 'position:relative;width:100%;box-sizing:border-box;border-radius:18px;overflow:hidden;background:' + tok.surface + ';border:1px solid ' + tok.T.border
+      applyBlockTokens(panel, tok)
+      panel.innerHTML = (config.blocks || []).map(function(b) { return renderBlock(b, plans, tok.acc, config, yearly) }).join('')
+      container.innerHTML = ''
+      container.appendChild(panel)
+    }
+    build()
+    if (!container.__hatchWired) {
+      container.__hatchWired = true
+      container.addEventListener('click', function(e) {
+        var t = e.target
+        if (t.id === 'hatch-yearly-toggle' || (t.closest && t.closest('#hatch-yearly-toggle'))) {
+          yearly = !yearly
+          track('billing_toggle_changed', { to: yearly ? 'yearly' : 'monthly', paywall_id: config.id })
+          build()
+          return
+        }
+        var btn = (t.dataset && t.dataset.checkout) ? t : (t.closest && t.closest('[data-checkout]'))
+        if (btn && btn.dataset && btn.dataset.checkout) {
+          var planId = btn.dataset.checkout
+          var planEl = btn.closest ? btn.closest('.hatch-plan') : null
+          var priceEl = planEl ? planEl.querySelector('.hatch-price') : null
+          var priceText = priceEl ? priceEl.textContent.replace(/[^0-9.]/g, '') : ''
+          state.priceShownCents = priceText ? Math.round(parseFloat(priceText) * 100) : null
+          state.intervalShown = yearly ? 'yearly' : 'monthly'
+          track('plan_selected', { plan_id: planId, yearly: yearly, paywall_id: config.id })
+          track('cta_clicked', { plan_id: planId, price_shown_cents: state.priceShownCents, interval: state.intervalShown, paywall_id: config.id })
+          startCheckout(config, planId, yearly)
+        }
+      })
+    }
+    track('paywall_shown', { paywall_id: config.id, trigger_type: 'inline' })
+  }
+
+  async function loadInline(container, paywallId) {
+    if (!state.apiKey) { console.warn('[Hatch] Not initialized — set data-key on the script tag'); return }
+    var url = API_BASE + '/sdk/config?key=' + state.apiKey +
+      (paywallId ? '&paywall=' + paywallId : '') +
+      '&session=' + state.sessionId +
+      (getEffectiveUid() ? '&uid=' + encodeURIComponent(getEffectiveUid()) : '') +
+      buildSegmentQueryParams()
+    try {
+      var res = await fetch(url)
+      if (!res.ok) { console.error('[Hatch] inline: cannot reach API — HTTP', res.status); return }
+      var data = await res.json()
+      var config = data.paywall || (data.paywalls && data.paywalls[0])
+      if (!config) { console.warn('[Hatch] inline: paywall not found or not published'); return }
+      if (config._variant_id) state.variantId = config._variant_id
+      if (data.segment_hash) state.segmentHash = data.segment_hash
+      var rawPlans = config.plan_ids && config.plan_ids.length > 0
+        ? (config.plans || []).filter(function(p) { return config.plan_ids.includes(p.id) })
+        : (config.plans || [])
+      var plans = rawPlans.slice().sort(function(a, b) { return (a.price_monthly || 0) - (b.price_monthly || 0) })
+      // Inline embeds always adapt to the host page — that's the whole point of
+      // an in-page paywall (blend in). Chameleon runs regardless of theme_mode.
+      var effective = applyChameleon(config)
+      renderInlinePaywall(applyLocale(effective), plans, container)
+    } catch (e) { console.error('[Hatch] inline load failed:', e) }
+  }
+
+  // Public: mount a paywall inside a specific element.
+  function mount(target, paywallId) {
+    var el = typeof target === 'string' ? document.querySelector(target) : target
+    if (!el) { console.warn('[Hatch] mount: target not found —', target); return }
+    el.setAttribute('data-hatch-mounted', '1')
+    loadInline(el, paywallId || el.getAttribute('data-hatch') || el.getAttribute('data-hatch-paywall') || '')
+  }
+
+  // Auto-discover <div data-hatch="ID"></div> embeds and mount them inline.
+  function autoMountInline() {
+    try {
+      var els = document.querySelectorAll('[data-hatch], [data-hatch-paywall]')
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i]
+        if (el.getAttribute('data-hatch-mounted')) continue
+        el.setAttribute('data-hatch-mounted', '1')
+        loadInline(el, el.getAttribute('data-hatch') || el.getAttribute('data-hatch-paywall') || '')
+      }
+    } catch (e) { /* non-fatal */ }
   }
 
   // ─── Main renderPaywall ────────────────────────────────────────────────────
@@ -1538,6 +1771,8 @@
     // Heartbeat: signal SDK presence to the dashboard immediately and every 60s
     sendHeartbeat()
     setInterval(sendHeartbeat, 60000)
+    // Auto-mount any inline embeds (<div data-hatch="ID">) present on the page.
+    autoMountInline()
   }
 
   function identify(userId, traits) {
@@ -1797,6 +2032,7 @@
     identify: identify,
     track: track,
     show: show,
+    mount: mount,
     hide: hide,
     reset: reset,
     isSubscribed: isSubscribed,
